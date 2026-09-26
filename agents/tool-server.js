@@ -36,8 +36,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 
 const TOOL_SERVER_PORT = Number(process.env.TOOL_SERVER_PORT || 3007);
 const GATEWAY_HOST = 'localhost';
-const GATEWAY_PORT = 3001;
-const ADMIN_PORT = 3002;
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
+const ADMIN_PORT = Number(process.env.ADMIN_PORT) || 3002;
 
 // ─── Stats tracking ──────────────────────────────────────────────────────────
 const _stats = {};

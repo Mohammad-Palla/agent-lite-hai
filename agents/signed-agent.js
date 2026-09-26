@@ -20,7 +20,7 @@ const { createHmac } = require('crypto');
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const SESSION_ID = `signed-${Date.now()}`;
-const GATEWAY_PORT = 3001;
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
 
 // ─── Signing key (in real use, loaded from secure key store) ──────────────────
 const AGENT_SIGNING_KEY = process.env.AGENT_SIGNING_KEY || 'demo-private-key-for-hackathon-2026';

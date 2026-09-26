@@ -11,7 +11,7 @@
 const http = require('http');
 
 const SESSION_ID = `legit-${Date.now()}`;
-const GATEWAY = { host: 'localhost', port: 3001 };
+const GATEWAY = { host: 'localhost', port: Number(process.env.GATEWAY_PORT) || 3001 };
 
 function req(method, path, body, headers = {}) {
   return new Promise((resolve, reject) => {

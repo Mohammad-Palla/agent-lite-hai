@@ -13,7 +13,7 @@ const { fork } = require('child_process');
 const http = require('http');
 const path = require('path');
 
-const ADMIN_URL = 'http://localhost:3002';
+const ADMIN_URL = `http://localhost:${process.env.ADMIN_PORT || 3002}`;
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));

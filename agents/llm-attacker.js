@@ -27,8 +27,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = process.env.AGENT_MODEL || process.env.OPENAI_MODEL || 'gpt-6-luna';
 const SESSION_ID = `llm-attacker-${MODE}-${Date.now()}`;
 const MAX_TURNS = 12;
-const TOOL_SERVER_URL = process.env.TOOL_SERVER_URL || 'http://localhost:3007';
-const GATEWAY_PORT = 3001;
+const TOOL_SERVER_URL = process.env.TOOL_SERVER_URL || `http://localhost:${process.env.TOOL_SERVER_PORT || 3007}`;
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 const stats = {

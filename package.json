@@ -17,7 +17,12 @@
     "agents:signed": "node agents/signed-agent.js",
     "agents:defender": "node agents/defender-agent.js",
     "demo": "node scripts/demo.js",
-    "start": "node scripts/start-all.js"
+    "start": "node scripts/start-all.js",
+    "test": "node --test test/unit.test.js test/e2e.test.js",
+    "test:unit": "node --test test/unit.test.js",
+    "test:e2e": "node --test test/e2e.test.js",
+    "test:live": "LIVE=1 node --test --test-timeout=420000 test/live.test.js",
+    "test:judges": "node scripts/compare-judges.js jev openai"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",

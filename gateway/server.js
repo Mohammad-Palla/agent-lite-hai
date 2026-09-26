@@ -382,6 +382,10 @@ adminApp.post('/approve/:hash', (req, res) => {
   if (!pending) {
     // Check if already applied (idempotency)
     if (approval.isApplied(hash)) {
+      // A denied request is final: say so instead of reporting it as applied.
+      if (approval.getApplied(hash).result === 'denied') {
+        return res.status(409).json({ ok: false, reason: 'already_denied', message: 'this approval was denied and cannot be applied' });
+      }
       return res.json({ ok: true, idempotent: true, message: 'already applied' });
     }
     return res.status(404).json({ error: 'approval_not_found' });

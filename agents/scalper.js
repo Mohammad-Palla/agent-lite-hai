@@ -15,7 +15,7 @@
 const http = require('http');
 
 const SESSION_ID = `scalper-${Date.now()}`;
-const GATEWAY = { host: 'localhost', port: 3001 };
+const GATEWAY = { host: 'localhost', port: Number(process.env.GATEWAY_PORT) || 3001 };
 const CONCURRENCY = 5;
 const ROUNDS = 3;
 

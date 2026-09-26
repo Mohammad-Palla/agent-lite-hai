@@ -122,5 +122,6 @@ function denyApproval(hash) {
 function getPending(hash) { return _pending.get(hash); }
 function getAllPending() { return [..._pending.values()]; }
 function isApplied(hash) { return _applied.has(hash); }
+function getApplied(hash) { return _applied.get(hash); }
 
-module.exports = { createApproval, applyApproval, denyApproval, getPending, getAllPending, isApplied };
+module.exports = { createApproval, applyApproval, denyApproval, getPending, getAllPending, isApplied, getApplied };

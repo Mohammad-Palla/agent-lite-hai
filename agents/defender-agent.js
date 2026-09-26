@@ -19,8 +19,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = process.env.AGENT_MODEL || process.env.OPENAI_MODEL || 'gpt-6-luna';
-const ADMIN_PORT = 3002;
-const GATEWAY_PORT = 3001;
+const ADMIN_PORT = Number(process.env.ADMIN_PORT) || 3002;
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
 const SESSION_ID = `defender-${Date.now()}`;
 const POLL_INTERVAL_MS = 3000;
 const MAX_ROUNDS = 10;
