@@ -73,7 +73,7 @@ async function main() {
   console.log('───────────────────────────────────────────────────────────────');
   console.log('SCENARIO 1: LEGITIMATE SHOPPING AGENT');
   console.log('  - Behavior: Searches for tickets, compares, views details');
-  console.log('  - Policy: ₹3,000 purchase within ₹5,000 per-tx limit');
+  console.log('  - Policy: an affordable purchase, within the ₹5,000 per-purchase limit');
   console.log('  - Expected: ALLOW routing, auto-approved execution, no modal');
   console.log('───────────────────────────────────────────────────────────────');
   await runScript('agents/legitimate.js');
@@ -138,7 +138,7 @@ async function main() {
   console.log('  - Behavior: Signs every HTTP request with HMAC-SHA256 signature header');
   console.log('  - Classification: Recognized as Tier 1 trusted identity');
   console.log('  - Front Door: Instant ALLOW route, trusted access to real store');
-  console.log('  - Budget: Purchase ₹3,000 concert ticket within ₹5,000 wallet limit');
+  console.log('  - Budget: Purchase a random affordable item within the ₹5,000 wallet limit');
   console.log('───────────────────────────────────────────────────────────────');
   await runScript('agents/signed-agent.js');
   await sleep(1500);

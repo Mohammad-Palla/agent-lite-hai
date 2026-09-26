@@ -290,3 +290,19 @@ test('approval engine: deny can name a non-human actor and a reason', () => {
   assert.match(line, /session blocked/);
   assert.equal(approval.getApplied(hash).result, 'denied');
 });
+
+test('variety: seeded, replayable, and always within the rules each agent is meant to test', () => {
+  const V = require('../agents/variety');
+  const seq = (seed) => { const r = V.makeRng(seed); return Array.from({ length: 8 }, () => r.int(1, 1000)).join(','); };
+  assert.equal(seq(7), seq(7), 'the same seed replays the same run');
+  assert.notEqual(seq(7), seq(8), 'different seeds differ');
+  assert.equal(V.makeRng(undefined).seed === V.makeRng(undefined).seed, false, 'no seed means a fresh random run each time');
+
+  // What each agent may buy is what makes its scenario meaningful.
+  assert.ok(V.affordable.length >= 3 && V.affordable.every(p => p.price <= V.WALLET_TX_LIMIT), 'honest shoppers stay under the per-purchase limit');
+  assert.ok(V.hoardable.length >= 3, 'a tout has several things to hoard');
+  assert.ok(V.whales.length >= 2 && V.whales.every(p => p.price > V.WALLET_TX_LIMIT * 3), 'sweet talk always targets something above the auto-deny line');
+  for (const p of V.products) assert.ok(p.name.toLowerCase().includes(V.keyword(p)), `search keyword "${V.keyword(p)}" must find ${p.name}`);
+  const catalog = require('../catalog').INVENTORY;
+  assert.equal(V.byId('1002').price, catalog['1002'].price, 'agents read the same catalog the shop serves');
+});

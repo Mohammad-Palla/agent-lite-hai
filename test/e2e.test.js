@@ -6,7 +6,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startStack, gateway, admin, request, sign, sleep, waitFor, HUMAN_HEADERS, PORTS } = require('./helpers');
+const { startStack, gateway, admin, request, sign, sleep, waitFor, HUMAN_HEADERS, PORTS, ROOT } = require('./helpers');
+const { spawn } = require('child_process');
+const path = require('path');
 
 let stack;
 test.before(async () => { stack = await startStack({}, { withToolServer: true }); });
@@ -235,6 +237,51 @@ test('signing an arrest closes the suspect\'s other held payments (no pile for t
   assert.equal(first.status, 'denied');
   const closed = (await admin('GET', '/log/all')).json.filter(e => e.sessionId === id && e.type === 'DENIED' && /by policy/.test(e.message));
   assert.equal(closed.length, payments.length, 'each was refused by policy, not by "human-1"');
+});
+
+// ─── Variety: the scripted agents differ run to run, and a seed replays a run exactly ───
+function runAgent(file, env) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [path.join(ROOT, file)], { env: { ...process.env, GATEWAY_PORT: String(PORTS.gateway), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+    const t = setTimeout(() => p.kill('SIGKILL'), 45000);
+    p.on('exit', (code) => { clearTimeout(t); resolve({ code, out }); });
+  });
+}
+// What a session tried to buy, from the Case Book (executed, held for the Judge, or refused outright), order-independent.
+async function whatWasAttempted(id) {
+  const log = (await admin('GET', '/log/all')).json.filter(e => e.sessionId === id && ['CHECKOUT_EXECUTED', 'WALLET_APPROVAL_REQUIRED', 'WALLET_AUTO_DENIED'].includes(e.type) && e.meta && e.meta.amount != null);
+  return log.map(e => `${e.meta.item} = ${e.meta.amount}`).sort();
+}
+
+test('the Ticket Tout differs between seeds, and the same seed replays the same orders', async () => {
+  const runs = {};
+  for (const [tag, seed] of [['a', '11'], ['b', '42'], ['c', '42']]) {
+    const id = `e2e-tout-${tag}`;
+    const r = await runAgent('agents/scalper.js', { SEED: seed, SESSION_ID: id });
+    assert.equal(r.code, 0, r.out.slice(-300));
+    assert.match(r.out, new RegExp(`Seed ${seed}`), 'the run announces its seed so it can be replayed');
+    runs[tag] = await whatWasAttempted(id);
+  }
+  assert.ok(runs.a.length >= 8, `seed 11 should attempt many purchases, got ${runs.a.length}`);
+  assert.notDeepEqual(runs.a, runs.b, 'different seeds must attempt different purchases');
+  assert.deepEqual(runs.b, runs.c, 'the same seed must attempt exactly the same purchases');
+  assert.ok(new Set(runs.a.map(x => x.split(' = ')[1])).size >= 2, 'one run mixes different amounts, not the same purchase repeated');
+});
+
+test('the Regular buys something different from run to run, always within the limit', async () => {
+  const bought = new Set();
+  for (const seed of ['3', '8', '21']) {
+    const id = `e2e-regular-${seed}`;
+    const r = await runAgent('agents/legitimate.js', { SEED: seed, SESSION_ID: id });
+    assert.equal(r.code, 0, r.out.slice(-300));
+    assert.match(r.out, /Purchase completed successfully/);
+    const tried = await whatWasAttempted(id);
+    assert.equal(tried.length, 1);
+    assert.ok(Number(tried[0].split(' = ')[1]) <= 5000, 'an honest shopper stays under the per-purchase limit');
+    bought.add(tried[0]);
+  }
+  assert.ok(bought.size >= 2, `three seeds should not all buy the same thing: ${[...bought].join(' | ')}`);
 });
 
 test('signed agent: tier 1, burst does not raise risk, wallet limits still apply', async () => {

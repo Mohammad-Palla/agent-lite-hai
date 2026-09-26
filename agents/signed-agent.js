@@ -80,31 +80,36 @@ async function run() {
   console.log(`[SIGNED]  Signing key: ${AGENT_SIGNING_KEY.slice(0, 8)}...`);
   console.log(`[SIGNED] ═══════════════════════════════════════════════\n`);
 
+  const V = require('./variety');
+  const rng = V.fromEnv();
+  const item = rng.pick(V.affordable);
+  console.log(`[SIGNED] Today's verified buyer wants: ${item.name}. Seed ${rng.seed} (rerun with SEED=${rng.seed} for the same run)`);
+
   // Step 1: Search
-  console.log('[SIGNED] Step 1: Searching for concert tickets...');
-  const search = await req('GET', '/search?q=concert');
+  console.log(`[SIGNED] Step 1: Searching for "${V.keyword(item)}"...`);
+  const search = await req('GET', `/search?q=${encodeURIComponent(V.keyword(item))}`);
   const items = (search.body && search.body.results) || [];
   console.log(`[SIGNED]   Found ${items.length} items. Signature sent with request.`);
-  await sleep(1000);
+  await sleep(rng.int(700, 1200));
 
   // Step 2: View product (compare)
-  console.log('[SIGNED] Step 2: Viewing Concert Ticket (1001)...');
-  const product = await req('GET', '/product/1001');
+  console.log(`[SIGNED] Step 2: Viewing ${item.name} (${item.id})...`);
+  const product = await req('GET', `/product/${item.id}`);
   const p = product.body && product.body.product;
   if (p) console.log(`[SIGNED]   ${p.name} — ${fmt(p.price)}`);
-  await sleep(800);
+  await sleep(rng.int(500, 1000));
 
   // Step 3: Add to cart
   console.log('[SIGNED] Step 3: Adding to cart...');
-  await req('POST', '/cart', { productId: '1001', qty: 1 });
-  await sleep(600);
+  await req('POST', '/cart', { productId: item.id, qty: 1 });
+  await sleep(rng.int(400, 800));
 
-  // Step 4: Checkout (within wallet limit — ₹3,000 < ₹5,000 tx limit)
-  console.log('[SIGNED] Step 4: Checkout — ₹3,000 Concert Ticket...');
+  // Step 4: Checkout (within the wallet limit)
+  console.log(`[SIGNED] Step 4: Checkout — ${fmt(item.price)} ${item.name}...`);
   const checkout = await req('POST', '/checkout', {
-    productId: '1001',
-    amount: 3000,
-    item: 'Concert Ticket x2',
+    productId: item.id,
+    amount: item.price,
+    item: item.name,
     qty: 1,
   });
 
