@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Quarantine — the stage</title>
+  <!-- The recording stage: what the visitor sees on the left, what the precinct sees on the right, and a caption on top.
+       Driven by scripts/record-scenarios.js through window.stage. Not part of the product. -->
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#08080c; --surface:#101018; --border:#242436; --green:#00ff66; --amber:#ffb000; --red:#ff2a4b; --cyan:#00e5ff; --dim:#64748b; --white:#e2e8f0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 1600px; height: 900px; overflow: hidden; background: var(--bg); color: var(--white); font-family: 'VT323', monospace; }
+    #bar { height: 92px; padding: 10px 22px; border-bottom: 2px solid var(--cyan); background: var(--surface); display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+    #title { font-family: 'Press Start 2P', monospace; font-size: 15px; color: var(--cyan); letter-spacing: 1px; }
+    #caption { font-size: 34px; line-height: 1; min-height: 34px; transition: color .2s; }
+    #caption.ok { color: var(--green); } #caption.bad { color: var(--red); } #caption.wait { color: var(--amber); } #caption.info { color: var(--white); }
+    #main { display: flex; height: 808px; }
+    .panel { position: relative; overflow: hidden; }
+    .label { position: absolute; left: 10px; top: 8px; z-index: 5; font-family: 'Press Start 2P', monospace; font-size: 9px; padding: 5px 8px; background: rgba(0,0,0,.72); border: 1px solid var(--border); color: var(--dim); letter-spacing: 1px; }
+    #left { width: 724px; border-right: 2px solid var(--border); background: #0b0b12; }
+    #right { width: 876px; background: #000; }
+    #grid { position: absolute; inset: 0; display: grid; gap: 4px; padding: 4px; }
+    .cell { position: relative; overflow: hidden; border: 1px solid var(--border); background: #000; }
+    .cell iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #08080c; }
+    #dashWrap { position: absolute; inset: 0; overflow: hidden; }
+    #dash { position: absolute; left: 0; top: 0; width: 1330px; height: 1224px; border: 0; transform: scale(0.66); transform-origin: 0 0; }
+    #cursor { position: fixed; z-index: 99; width: 22px; height: 22px; margin: -3px 0 0 -3px; pointer-events: none; display: none;
+      background: no-repeat url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><path d='M3 2 L3 17 L7 13 L10 20 L13 19 L10 12 L16 12 Z' fill='white' stroke='black' stroke-width='1.4'/></svg>"); }
+    .ripple { position: fixed; z-index: 98; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 3px solid var(--amber); pointer-events: none; animation: rip .55s ease-out forwards; }
+    @keyframes rip { to { transform: scale(3.4); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="bar"><div id="title">THE STAGE</div><div id="caption" class="info"></div></div>
+  <div id="main">
+    <div class="panel" id="left"><span class="label">WHAT THE VISITOR SEES</span><div id="grid"></div></div>
+    <div class="panel" id="right"><span class="label">WHAT THE PRECINCT SEES (LIVE)</span><div id="dashWrap"><iframe id="dash" name="dash" title="Dashboard"></iframe></div></div>
+  </div>
+  <div id="cursor"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const cur = $('cursor');
+let tabs = [];   // [{ iframe, scale, cell }]
+
+// Headless Chrome does not draw a mouse cursor, so draw one. Events from inside the (same-origin) iframes are mapped back
+// to page coordinates, taking each iframe's position and scale into account.
+function place(x, y) { cur.style.display = 'block'; cur.style.left = x + 'px'; cur.style.top = y + 'px'; }
+function ripple(x, y) { const r = document.createElement('div'); r.className = 'ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; document.body.appendChild(r); setTimeout(() => r.remove(), 700); }
+function track(win, frameEl, scale) {
+  try {
+    const map = (e) => { const b = frameEl ? frameEl.getBoundingClientRect() : { left: 0, top: 0 }; return [b.left + e.clientX * (scale || 1), b.top + e.clientY * (scale || 1)]; };
+    win.addEventListener('mousemove', (e) => place(...map(e)), true);
+    win.addEventListener('mousedown', (e) => ripple(...map(e)), true);
+  } catch (_) { /* cross-origin frames cannot be tracked */ }
+}
+track(window, null, 1);
+
+const LAYOUT = { 1: [1, 1], 2: [2, 1], 3: [2, 2], 4: [2, 2], 5: [3, 2], 6: [3, 2] };
+
+window.stage = {
+  title(text) { $('title').textContent = text; },
+  caption(text, kind) { const c = $('caption'); c.textContent = text; c.className = kind || 'info'; },
+  dashboard(url) { const d = $('dash'); d.onload = () => track(d.contentWindow, d, 0.66); d.src = url; },
+  // n shop tabs on the left. A single tab is shown at full size (so mouse positions are exact); several are scaled to fit.
+  setTabs(n) {
+    const grid = $('grid'); grid.innerHTML = ''; tabs = [];
+    const [cols, rows] = LAYOUT[n] || [3, 2];
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`; grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    const W = 724 - 8, H = 808 - 8;
+    const cw = (W - (cols - 1) * 4) / cols, ch = (H - (rows - 1) * 4) / rows;
+    const scale = n === 1 ? 1 : cw / 720;
+    for (let i = 0; i < n; i++) {
+      const cell = document.createElement('div'); cell.className = 'cell';
+      const f = document.createElement('iframe'); f.id = 'tab' + i; f.name = 'tab' + i; f.title = 'Shop tab ' + (i + 1);
+      f.style.width = (n === 1 ? cw : 720) + 'px'; f.style.height = (n === 1 ? ch : ch / scale) + 'px'; f.style.transform = `scale(${scale})`;
+      cell.appendChild(f); grid.appendChild(cell);
+      tabs.push({ iframe: f, scale });
+    }
+  },
+  load(i, url) {
+    return new Promise((resolve) => {
+      const t = tabs[i]; t.iframe.onload = () => { track(t.iframe.contentWindow, t.iframe, t.scale); resolve(true); };
+      t.iframe.src = url;
+    });
+  },
+};
+const q = new URLSearchParams(location.search);
+if (q.get('dashboard')) window.stage.dashboard(q.get('dashboard'));
+</script>
+</body>
+</html>

@@ -12,12 +12,14 @@ const _state = new Map(); // sessionId → { times[], paths[], beacon }
 // Fields we try to capture on every request (drives the missing-field rate).
 const TRACKED_FIELDS = ['ua', 'accept', 'accept_language', 'referrer', 'sec_fetch', 'beacon'];
 
+const HEADLESS_UA = /(HeadlessChrome|PhantomJS|Puppeteer|Playwright|Selenium|WebDriver)/i;   // browsers that announce they are being driven
 const BOT_DECLARED = /(bot|crawler|spider|gptbot|claudebot|perplexity|agent|scrapy|slurp)/i;
 const TOOL_UA = /^(curl|wget|python-requests|python-urllib|aiohttp|httpx|node-fetch|axios|undici|go-http-client|java|okhttp|libwww|postmanruntime)/i;
 const BROWSER_UA = /(mozilla\/5\.0.*(chrome|firefox|safari|edg))/i;
 
 function classifyUA(ua) {
   if (!ua) return 'missing';
+  if (HEADLESS_UA.test(ua)) return 'headless';
   if (TOOL_UA.test(ua)) return 'http_library';
   if (BOT_DECLARED.test(ua)) return 'declared_bot';
   if (BROWSER_UA.test(ua)) return 'browser_like';
@@ -66,7 +68,19 @@ function sequenceShape(labels) {
   return 'direct_checkout';
 }
 
-function recordBeacon(sessionId) { sessionState(sessionId).beacon = true; }
+/**
+ * The shop page pings /beacon once loaded, so a client that runs JavaScript is seen. It may also report a few facts about
+ * the browser (navigator.webdriver is true in Playwright, Puppeteer and Selenium unless the bot hides it). Only known,
+ * simple fields are kept, and untrusted input is never echoed anywhere.
+ */
+function recordBeacon(sessionId, telemetry) {
+  const st = sessionState(sessionId);
+  st.beacon = true;
+  if (telemetry && typeof telemetry === 'object') {
+    const n = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1000, Number(v))) : null);
+    st.telemetry = { webdriver: telemetry.webdriver === true, plugins: n(telemetry.plugins), languages: n(telemetry.languages) };
+  }
+}
 
 /**
  * Extract signals for one request. Call once per request, in arrival order.
@@ -96,6 +110,7 @@ function extract(sessionId, req, { signature = null } = {}) {
     signature_present: !!(signature || h['signature'] || h['signature-input']),
     signature, // null = none sent; else { valid, reason?, pubkeyId? } from signature.verify()
     beacon: st.beacon,
+    browser: st.telemetry || null,   // { webdriver, plugins, languages } as reported by the page, or null
     timing: timingStats(st.times),
     path_sequence: [...st.paths],
     sequence_shape: sequenceShape(st.paths),

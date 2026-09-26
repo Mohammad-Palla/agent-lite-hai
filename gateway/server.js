@@ -185,8 +185,17 @@ gatewayApp.use((req, res) => {
 
   // Beacon: a JS-capable client pings this; never proxied, never scored as shopping traffic
   if (req.url.startsWith('/beacon')) {
-    signals.recordBeacon(sessionId);
-    return res.status(204).end();
+    // Optional tiny JSON body with browser facts (navigator.webdriver...). Capped at 1 KB and parsed defensively.
+    let raw = '';
+    let tooBig = false;
+    req.on('data', (d) => { if (raw.length + d.length > 1024) tooBig = true; else raw += d; });
+    req.on('end', () => {
+      let telemetry = null;
+      if (!tooBig && raw) { try { telemetry = JSON.parse(raw); } catch (_) { /* ignore malformed telemetry */ } }
+      signals.recordBeacon(sessionId, telemetry);
+      res.status(204).end();
+    });
+    return;
   }
 
   // Agent completion signal: immediately marks session completed
@@ -374,7 +383,7 @@ adminApp.get('/sessions', (req, res) => {
     sandboxed: s.sandboxed,
     blockRuleApplied: s.blockRuleApplied,
     agentType: s.agentType,
-    identityTier: s.identityTier || 4,
+    identityTier: s.identityTier || 4, identityLabel: s.identityLabel || null,
     signatureValid: !!s.signatureValid,
     requestRate: (s.requestLog?.length || 0) / 10,
   })));
@@ -390,7 +399,7 @@ adminApp.get('/approvals/:hash([a-f0-9]{16})', (req, res) => {
   }
   if (approval.isApplied(hash)) {
     const done = approval.getApplied(hash);
-    if (done.result === 'denied') return res.json({ status: 'denied', hash, action: done.action, sessionId: done.sessionId });
+    if (done.result === 'denied') return res.json({ status: 'denied', hash, action: done.action, sessionId: done.sessionId, by: done.by || 'human-1', why: done.why || '' });
     return res.json({ status: 'approved', hash, action: done.action, sessionId: done.sessionId, result: done.result });
   }
   res.status(404).json({ status: 'unknown', hash, message: 'no such approval, or it expired because the session risk changed and needs a fresh one' });
@@ -702,7 +711,7 @@ wss.on('connection', (ws) => {
         sandboxed: s.sandboxed,
         blockRuleApplied: s.blockRuleApplied,
         agentType: s.agentType,
-        identityTier: s.identityTier || 4,
+        identityTier: s.identityTier || 4, identityLabel: s.identityLabel || null,
         signatureValid: !!s.signatureValid,
         requestRate: (s.requestLog?.length || 0) / 10,
         status: s.status || 'active',

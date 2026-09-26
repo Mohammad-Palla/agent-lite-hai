@@ -24,7 +24,10 @@
     "test:live": "LIVE=1 node --test --test-timeout=420000 test/live.test.js",
     "test:judges": "node scripts/compare-judges.js jev openai",
     "trueforge": "OUTBOUND_URL_ALLOWED_HOSTS='[\"localhost\",\"127.0.0.1\"]' node node_modules/@truefoundry/trueforge/dist/cli.js --port 8790",
-    "trueforge:setup": "node scripts/trueforge-setup.js"
+    "trueforge:setup": "node scripts/trueforge-setup.js",
+    "attack": "node scripts/playwright-attack.js",
+    "test:browser": "BROWSER=1 node --test --test-timeout=300000 test/browser.test.js",
+    "record": "node scripts/record-scenarios.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
@@ -44,5 +47,8 @@
     "trueforge"
   ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
 }

@@ -40,3 +40,5 @@ values.json
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
+# Screen recordings of the Playwright attacks (large)
+recordings/

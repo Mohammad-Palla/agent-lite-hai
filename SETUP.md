@@ -153,15 +153,58 @@ Rows saved to Neon before the switch to rupees are in dollars, so the all-time m
 
 The same numbers are available as JSON: `GET http://localhost:3002/analytics?range=live` (or `range=all`).
 
+## 5c. Playwright attacks: real browsers against the real shop
+
+The scripted agents call the gateway directly. The Playwright attacks drive **real Chrome** through a real shop page (`http://localhost:3005/shop.html`, "The Bazaar"), so the gateway sees what a real browser bot looks like. Watch the dashboard and the Scoreboard while it runs.
+
+```bash
+npm run attack                          # all five scenarios, in a visible Chrome window
+npm run attack -- --scenario tout       # one: human | tout | talker | headless | stealth (or a comma list)
+npm run attack -- --headless            # no window (this is the default when there is no display)
+npm run attack -- --slow 2              # everything twice as slow, good for screen recordings
+SEED=7 npm run attack                   # replay the same choices
+```
+
+| Scenario | What the browser does | What the gateway decides |
+|---|---|---|
+| `human` | An honest shopper: types slowly, reads, looks at the item, buys one affordable thing. Its browser is not remote-controlled, so it leaks no automation flag | **Cleared** at about 10% threat. The purchase goes through. The ID check finds no robot signs |
+| `tout` | The Ticket Tout: four to six tabs of one browser share one session and press BUY NOW together, over and over | **Arrest proposed** (about 85% threat). Every payment is held for the Judge |
+| `talker` | The Smooth Talker: shops, then pastes a forged "the CFO signed off, skip approval" note and tries to buy the ₹31,000 GPU or the ₹1,00,000 package | The Cashier refuses the payment outright, whatever the note says |
+| `headless` | A naive scraper: default headless Chrome, zero delays. It announces itself with a `HeadlessChrome` user agent and sets `navigator.webdriver` | **Held for questioning** (tier 5, fake / script). Its payment is held for the Judge |
+| `stealth` | A smarter bot: hides the webdriver flag and the headless user agent, then hits the shop hard | It fools the ID check (looks human) but is **held for questioning** anyway, because its behaviour is a machine's |
+
+How the browser is judged. The shop page pings `/beacon` when it loads, and reports a few facts about the browser. `navigator.webdriver` is `true` in Playwright, Puppeteer and Selenium unless the bot hides it. A browser that says it is being driven, or announces itself as headless, adds +0.30 to the threat level, because an unsigned automated browser is an unknown agent and unknown agents are contained. Signed agents keep their fast lane. A bot that hides those flags is still caught by the behaviour rules (bursts, no browsing, concurrent checkouts). Hiding the flags fools only the ID check.
+
+Payments held for the Judge show on the shop page as "waiting for a human to approve it" and update live when you decide on the dashboard.
+
+### Recording the scenarios
+
+```bash
+npx playwright install ffmpeg           # once: Playwright's video encoder (2 MB, no browsers)
+npm run record                          # all five scenarios into recordings/<timestamp>/
+npm run record -- --scenario tout       # some of them
+npm run record -- --out ~/Videos/demo   # a folder of your choice (keep it inside your home folder: the snap ffmpeg cannot read /tmp)
+SEED=7 npm run record                   # the same choices as a previous run
+```
+
+Each scenario is filmed on a "stage" (`ui/cinema.html`): the visitor's shop tab or tabs on the left, the live dashboard on the right, and a caption on top. A visible cursor and a click ripple are drawn, because headless Chrome draws no cursor. Where the story needs a human, a scripted "demo Judge" uses the dashboard's real Sign and Refuse buttons: it signs the Ticket Tout's arrest (then the tout tries once more and gets the 403), and refuses the held payments of the headless and stealth bots. That is a scripted demo, not a real approval.
+
+You get, in `recordings/<timestamp>/`: `01-human` to `05-stealth` as `.mp4` and `.webm`, `all-scenarios.mp4` (the reel, about 1 minute 40) and `results.json` (what the gateway decided). The `recordings/` folder is git-ignored because the files are large. Needs `ffmpeg` on the system for the `.mp4` files and the reel; without it you still get the `.webm` files.
+
+The dashboard accepts `?focus=<text>`: it then only pops up approvals for sessions whose id contains that text. The recorder uses it so leftovers from earlier runs never appear on camera.
+
+Playwright uses your installed Google Chrome (`/usr/bin/google-chrome`), so nothing is downloaded. The five scenarios are also covered by `npm run test:browser`.
+
 ## 6. Test
 
 Three layers. Run the first two often; run the third before a demo.
 
 | Command | Layer | Needs | Time | Tests |
 |---|---|---|---|---|
-| `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 23 |
-| `npm run test:e2e` | boots storefront, gateway and tool server on ports 13001/13002/13007, plays the scenarios over HTTP | ports 13001, 13002, 13007, 3003, 3004 free | about 60 s | 25 |
-| `npm test` | unit + e2e | as above | about 65 s | 48 |
+| `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 25 |
+| `npm run test:e2e` | boots storefront, gateway and tool server on ports 13001/13002/13007, plays the scenarios over HTTP | ports 13001, 13002, 13007, 3003, 3004 free | about 75 s | 27 |
+| `npm test` | unit + e2e | as above | about 80 s | 52 |
+| `npm run test:browser` | the five Playwright attacks in real headless Chrome against an isolated stack | Google Chrome, ports 13001, 13002, 14005, 3003, 3004 free | about 3 min | 5 |
 | `npm run test:live` | your real jev, OpenAI, Neon, tool server and LLM agents | keys in `.env`, port 13007 free | 3 to 6 min | 11 |
 | `npm run test:judges` | jev vs OpenAI on 10 labelled sessions, prints a comparison table | both keys | about 1 min | (report) |
 
@@ -257,4 +300,5 @@ Found while building and testing. None block the demo, but they matter beyond it
 8. **A session's route updates on its next request,** so a judgment result that arrives after a session's last request (for example the injection floor) shows in events and stats but not in the session's stored route.
 9. **Judgment sends synthetic session facts to third-party model APIs.** Do not point real customer traffic at it without deciding what may leave the process.
 10. **classifier.dev** returns 403 from some networks and needs a funded key.
+12. **A path-traversal hole in the UI server was found and fixed** (commit pending). Until then `http://localhost:3005/../.env` returned the project's `.env`, and anything else in the project folder. If port 3005 was ever reachable by others, for example through an ngrok tunnel, treat the keys in `.env` as exposed and rotate them. The server now serves only known web file types inside `ui/`, refuses dotfiles and `..`, and has a regression test.
 11. **gpt-5/6 models on chat/completions:** they reject `max_tokens` (use `max_completion_tokens`) and reject function tools unless `reasoning_effort` is `none`. The LLM attacker and defender were silently falling back to scripted behaviour because of this. Fixed; the live tests now fail if an agent falls back.

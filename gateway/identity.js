@@ -101,9 +101,12 @@ function classifySignals(sig) {
   const tells = [];
   if (sig.ua_class === 'http_library') tells.push('http_library_ua');
   if (sig.ua_class === 'missing') tells.push('missing_ua');
+  if (sig.ua_class === 'headless') tells.push('headless_browser_ua');
+  if (sig.browser && sig.browser.webdriver === true) tells.push('webdriver_flag');
   if (!sig.accept_language && !sig.sec_fetch) tells.push('no_browser_headers');
   if (sig.sequence_shape === 'direct_checkout') tells.push('direct_checkout');
-  if (tells.length >= 2 || sig.ua_class === 'http_library') {
+  const strongTell = tells.includes('webdriver_flag') || tells.includes('headless_browser_ua');   // the browser itself says it is being driven
+  if (tells.length >= 2 || sig.ua_class === 'http_library' || strongTell) {
     return { tier: 5, label: 'automation_tells', confidence: Math.min(0.95, 0.5 + tells.length * 0.15), evidence: [...evidence, ...tells] };
   }
 

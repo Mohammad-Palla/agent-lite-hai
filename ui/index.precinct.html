@@ -995,7 +995,7 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFract
 
 const ROUTE_LABEL = { ALLOW: 'CLEARED', QUARANTINE: 'HELD FOR QUESTIONING', BLOCK_PROPOSED: 'ARREST PROPOSED', BLOCKED: 'DOOR SLAMMED' };
 const ROUTE_STAMP = { ALLOW: 'CLEARED', QUARANTINE: 'HELD', BLOCK_PROPOSED: 'WANTED', BLOCKED: 'BUSTED' };
-const TIER_LABEL = { 1: 'BADGE-HOLDER', 2: 'ID CHECKS OUT', 3: 'SAYS IT IS A ROBOT', 4: 'ACTS LIKE A ROBOT', 5: 'FAKE / SCRIPT' };
+const TIER_LABEL = { H: 'LOOKS HUMAN', 1: 'BADGE-HOLDER', 2: 'ID CHECKS OUT', 3: 'SAYS IT IS A ROBOT', 4: 'ACTS LIKE A ROBOT', 5: 'FAKE / SCRIPT' };
 const TIER_GLOSS = {
   1: 'Proven ID, fast lane', 2: 'A known robot, address verified', 3: 'Admits to being a robot',
   4: 'Never said so, but moves like one', 5: 'Forged ID or a bare script'
@@ -1175,7 +1175,7 @@ function escapeHTML(str) {
 function handleLogEntry(entry) {
   dispatchLine(entry);
   if (entry.type === 'APPROVAL_PENDING' && entry.meta?.hash) {
-    showApprovalModal(entry.meta.hash, entry.meta);
+    showApprovalModal(entry.meta.hash, { ...entry.meta, sessionId: entry.sessionId });
   } else if (entry.type === 'APPROVED' || entry.type === 'DENIED') {
     if (activePendingHash === entry.meta?.hash) {
       dismissApprovalModal();
@@ -1183,7 +1183,10 @@ function handleLogEntry(entry) {
   }
 }
 
+const FOCUS = new URLSearchParams(location.search).get('focus');   // optional: only pop up for sessions whose id contains this
+
 function showApprovalModal(hash, data) {
+  if (FOCUS && !String((data && data.sessionId) || '').includes(FOCUS)) return;
   activePendingHash = hash;
   activePendingData = data;
 
@@ -1427,7 +1430,8 @@ function renderSessionCards(sessionsList) {
 
     // Tier badge (set by identity-classifier; fallback by agent type)
     let tier = s.identityTier;
-    if (!tier) {
+    if (s.identityLabel === 'human_like') tier = 'H';   // the ID check found no robot signs
+    else if (!tier) {
       if (s.agentType === 'signed') tier = 1;
       else if (s.agentType === 'legitimate') tier = 4;
       else if (s.agentType === 'scalper') tier = 5;
@@ -1435,7 +1439,7 @@ function renderSessionCards(sessionsList) {
       else if (s.agentType && s.agentType.includes('llm')) tier = 4;
       else tier = 4;
     }
-    const tierColors = {1:'#9f7aea', 2:'#68d391', 3:'#63b3ed', 4:'#fbd38d', 5:'#fc8181'};
+    const tierColors = {H:'#00ff66', 1:'#9f7aea', 2:'#68d391', 3:'#63b3ed', 4:'#fbd38d', 5:'#fc8181'};
     const tierColor = tierColors[tier] || '#a0aec0';
     const tierLabel = TIER_LABEL[tier] || 'UNKNOWN';
 
@@ -1455,7 +1459,7 @@ function renderSessionCards(sessionsList) {
         <div class="card-top">
           <span class="card-id">${s.id.substring(0, 18)}</span>
           <span class="card-route ${tagClass}">${isDone ? '✓ CASE CLOSED' : (ROUTE_LABEL[s.route] || s.route)}</span>
-          <span title="${TIER_GLOSS[tier] || ''}" style="font-size:9px;padding:2px 5px;border-radius:2px;background:${tierColor}22;color:${tierColor};border:1px solid ${tierColor};font-family:var(--font-pixel)">T${tier}: ${tierLabel}</span>
+          <span title="${TIER_GLOSS[tier] || ''}" style="font-size:9px;padding:2px 5px;border-radius:2px;background:${tierColor}22;color:${tierColor};border:1px solid ${tierColor};font-family:var(--font-pixel)">${tier === 'H' ? '' : 'T' + tier + ': '}${tierLabel}</span>
         </div>
         <div class="who">${who[0]}<small>${who[1]}</small></div>
         <span class="stamp" style="color:${stampColor}">${stampText}</span>

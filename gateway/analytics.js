@@ -17,7 +17,7 @@ const VERDICTS = ['ALLOW', 'QUARANTINE', 'BLOCK_PROPOSED', 'BLOCKED'];
 function whoIs(id) {
   const s = String(id || '');
   const w = (name) => new RegExp(`(^|[-_])${name}([-_]|$)`);   // the word anywhere in the id: "scalper-123", "e2e-scalper", "tout-demo-42"
-  const rules = [[w('legit|regular'), 'The Regular'], [w('scalper|tout|chk'), 'The Ticket Tout'], [w('ambiguous'), 'The Smooth Talker'],
+  const rules = [[w('legit|regular|human'), 'The Regular'], [w('scalper|tout|chk'), 'The Ticket Tout'], [w('ambiguous|talker'), 'The Smooth Talker'], [w('headless|stealth'), 'The Robot Browser'],
     [w('signed'), 'The Badge-Holder'], [/inject/, 'The Smooth Talker (AI)'], [/(llm|tf)-attacker/, 'Undercover Crook'], [w('defender'), 'Good Cop']];
   for (const [re, name] of rules) if (re.test(s)) return name;
   return 'Other callers';

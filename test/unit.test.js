@@ -402,3 +402,39 @@ test('scoreboard page: renders real-shaped data without errors', () => {
   assert.match(els.recent._q._h, /DOOR SLAMMED/);
   assert.match(els.byWho._q._h, /The Ticket Tout/);
 });
+
+test('identity: a headless user agent or the webdriver flag is a strong automation tell on its own', () => {
+  const identity = require('../gateway/identity');
+  const signals = require('../gateway/signals');
+  assert.equal(signals.classifyUA('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36'), 'headless');
+  assert.equal(signals.classifyUA('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'), 'browser_like');
+  const human = { ua: 'x', ua_class: 'browser_like', accept_language: 'en', sec_fetch: 'cors', referrer: 'r', beacon: true, timing: { cv: 0.8 }, sequence_shape: 'full_journey', declared_agent: null, signature: null };
+  assert.equal(identity.classifySignals(human).tier, null);
+  const driven = identity.classifySignals({ ...human, browser: { webdriver: true, plugins: 5, languages: 2 } });
+  assert.equal(driven.tier, 5);
+  assert.ok(driven.evidence.includes('webdriver_flag'));
+  const headless = identity.classifySignals({ ...human, ua_class: 'headless' });
+  assert.equal(headless.tier, 5);
+  assert.ok(headless.evidence.includes('headless_browser_ua'));
+  assert.equal(identity.classifySignals({ ...human, browser: { webdriver: false } }).tier, null, 'an honest browser reporting webdriver=false is left alone');
+});
+
+test('router: a browser that says it is being driven adds far more than a plain script, and honest browsers are untouched', () => {
+  const router = require('../gateway/router');
+  const ev = (id, payload) => ({ type: 'identity.classified', session_id: id, payload, ts: Date.now() });
+  router.reset();
+  router.observe(ev('script', { tier: 5, label: 'automation_tells', evidence: ['http_library_ua'] }));
+  router.observe(ev('driven', { tier: 5, label: 'automation_tells', evidence: ['webdriver_flag'] }));
+  router.observe(ev('headless', { tier: 5, label: 'automation_tells', evidence: ['headless_browser_ua'] }));
+  router.observe(ev('human', { tier: null, label: 'human_like', evidence: [] }));
+  const at = (id, det) => router.decide(id, det).score;
+  assert.ok(Math.abs(at('script', 0.2) - 0.30) < 1e-9, 'a plain script: small nudge');
+  assert.ok(Math.abs(at('driven', 0.2) - (0.2 + router.DRIVEN_BROWSER_BUMP)) < 1e-9);
+  assert.ok(Math.abs(at('headless', 0.2) - (0.2 + router.DRIVEN_BROWSER_BUMP)) < 1e-9);
+  assert.equal(router.decide('driven', 0.2).route, 'QUARANTINE', 'an unsigned driven browser making a purchase is contained');
+  assert.equal(at('human', 0.2), 0.2, 'nothing suspicious: no nudge');
+  // a verified signed agent driving a browser is still trusted: the trust cap wins
+  router.observe(ev('signed', { tier: 1, label: 'signed_agent', verified: true, evidence: ['signature_valid:k', 'webdriver_flag'] }));
+  assert.equal(router.decide('signed', 0.5).score, router.TIER1_TRUST_CAP);
+  router.reset();
+});

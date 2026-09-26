@@ -120,7 +120,7 @@ function denyApproval(hash, by = 'human-1', why = '') {
 
   _pending.delete(hash);
   // Denied decisions are NOT replayable
-  _applied.set(hash, { ...pending, result: 'denied', appliedAt: Date.now() });
+  _applied.set(hash, { ...pending, result: 'denied', by, why, appliedAt: Date.now() });
 
   log.append('DENIED', pending.sessionId,
     `[DENIED] by ${by} @ ${new Date().toISOString().slice(11, 19)} action=${pending.action} hash=${hash}${why ? ` (${why})` : ''}`,

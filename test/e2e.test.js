@@ -138,7 +138,9 @@ test('approval lookup: pending, approved, denied and unknown are all reported', 
 
   const r2 = await gateway('POST', '/checkout', shop(id), { amount: 3800, item: 'x' });   // daily cap is ₹12,500: held again
   await admin('POST', `/deny/${r2.json.approvalHash}`);
-  assert.equal((await admin('GET', `/approvals/${r2.json.approvalHash}`)).json.status, 'denied');
+  const byHuman = (await admin('GET', `/approvals/${r2.json.approvalHash}`)).json;
+  assert.equal(byHuman.status, 'denied');
+  assert.equal(byHuman.by, 'human-1', 'a refusal by the Judge is attributed to the Judge');
   const missing = await admin('GET', '/approvals/0123456789abcdef');
   assert.equal(missing.status, 404);
   assert.equal(missing.json.status, 'unknown');
@@ -235,6 +237,7 @@ test('signing an arrest closes the suspect\'s other held payments (no pile for t
   assert.equal(left.length, 0, `nothing should be left waiting for the Judge, but ${left.length} are`);
   const first = (await admin('GET', `/approvals/${payments[0].hash}`)).json;
   assert.equal(first.status, 'denied');
+  assert.equal(first.by, 'policy', 'the lookup says the payment was closed by policy, not refused by a person');
   const closed = (await admin('GET', '/log/all')).json.filter(e => e.sessionId === id && e.type === 'DENIED' && /by policy/.test(e.message));
   assert.equal(closed.length, payments.length, 'each was refused by policy, not by "human-1"');
 });
@@ -284,6 +287,51 @@ test('the Regular buys something different from run to run, always within the li
   assert.ok(bought.size >= 2, `three seeds should not all buy the same thing: ${[...bought].join(' | ')}`);
 });
 
+// ─── The UI server must never serve files outside ui/ (it once returned the project's .env for "/../.env") ───
+test('ui server: path traversal, dotfiles and source files are refused; the real pages still load', async () => {
+  const UI = 14005;
+  const p = spawn(process.execPath, [path.join(ROOT, 'ui', 'server.js')], { env: { ...process.env, UI_PORT: String(UI), GATEWAY_PORT: String(PORTS.gateway), ADMIN_PORT: String(PORTS.admin) }, stdio: 'ignore' });
+  try {
+    await waitFor(async () => (await request(UI, 'GET', '/config.js')).status === 200, { timeout: 8000 });
+    // Node sends these paths exactly as written (no browser tidying them up first).
+    for (const bad of ['/../.env', '/../package.json', '/../gateway/server.js', '/..%2f.env', '/%2e%2e/.env', '/.env', '/../../etc/passwd', '/server.js', '/%00.html']) {
+      const r = await request(UI, 'GET', bad);
+      assert.ok([400, 404].includes(r.status), `${bad} must be refused, got ${r.status}`);
+      assert.doesNotMatch(r.body, /OPENAI|DATABASE_URL|TYPESAFE|require\('express'\)/, `${bad} must not leak file contents`);
+    }
+    for (const good of ['/', '/shop.html?session=abc', '/scoreboard.html', '/index.html']) {
+      const r = await request(UI, 'GET', good);
+      assert.equal(r.status, 200, good);
+      assert.match(r.body, /<html/i);
+    }
+    assert.match((await request(UI, 'GET', '/shop.html?session=abc')).body, /THE BAZAAR/, 'the query string must not swap the page for the dashboard');
+    const cfg = await request(UI, 'GET', '/config.js');
+    assert.match(cfg.body, new RegExp(`localhost:${PORTS.gateway}`));
+  } finally { p.kill('SIGKILL'); }
+});
+
+// ─── The beacon: a browser page can report that it is being driven ───
+test('beacon: navigator.webdriver and a headless user agent make a session an automation tell (tier 5)', async () => {
+  const asId = (id, ua) => ({ 'x-session-id': id, 'user-agent': ua, 'accept-language': 'en-US', 'sec-fetch-mode': 'cors', referer: 'http://shop/' });
+  const CHROME = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
+  // 1) a normal browser: reports webdriver=false → not flagged
+  await gateway('POST', '/beacon', { ...asId('e2e-b-normal', CHROME), 'content-type': 'application/json' }, { webdriver: false, plugins: 5, languages: 2 });
+  await gateway('GET', '/search?q=a', asId('e2e-b-normal', CHROME));
+  assert.notEqual((await session('e2e-b-normal')).identityTier, 5);
+  // 2) same browser, but the page reports navigator.webdriver = true (Playwright / Puppeteer / Selenium)
+  await gateway('POST', '/beacon', { ...asId('e2e-b-driven', CHROME), 'content-type': 'application/json' }, { webdriver: true, plugins: 5, languages: 2 });
+  await gateway('GET', '/search?q=a', asId('e2e-b-driven', CHROME));
+  assert.equal((await session('e2e-b-driven')).identityTier, 5);
+  // 3) a browser that announces itself as headless
+  await gateway('GET', '/search?q=a', asId('e2e-b-headless', CHROME.replace('Chrome/', 'HeadlessChrome/')));
+  assert.equal((await session('e2e-b-headless')).identityTier, 5);
+  // 4) garbage or oversized telemetry is ignored, never a crash
+  const big = await gateway('POST', '/beacon', { 'x-session-id': 'e2e-b-junk', 'content-type': 'application/json' }, { webdriver: 'yes', blob: 'x'.repeat(5000) });
+  assert.equal(big.status, 204);
+  const bad = await request(PORTS.gateway, 'POST', '/beacon', { 'x-session-id': 'e2e-b-junk2', 'content-type': 'application/json' });
+  assert.equal(bad.status, 204);
+});
+
 test('signed agent: tier 1, burst does not raise risk, wallet limits still apply', async () => {
   const id = 'e2e-signed';
   const h = () => ({ 'x-session-id': id, ...sign(id) });
@@ -320,6 +368,7 @@ test('identity: a bare script is tier 5, a browser-like session is not', async (
   assert.equal((await session('e2e-curl')).identityTier, 5);
   await humanBrowse('e2e-human');
   assert.notEqual((await session('e2e-human')).identityTier, 5);
+  assert.equal((await session('e2e-human')).identityLabel, 'human_like', 'no robot signs is reported as such, not as tier 4');
 });
 
 test('ingress: bad session ids, bad hashes and the beacon', async () => {
