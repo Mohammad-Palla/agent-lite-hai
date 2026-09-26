@@ -6,6 +6,8 @@
 
 ---
 
+> **How a visitor is judged, what counts as malicious, and how every decision is verified:** see [JUDGING.md](JUDGING.md).
+
 > **The Precinct.** On the dashboard the system is explained as a police precinct: the gateway is the Desk Sergeant, the quarantine shop is the Interrogation Room, the defender AI is Good Cop, the wallet firewall is Bad Cop the Cashier, and the human approver is the Judge. The scalper is the Ticket Tout. Amounts are in Indian rupees (₹). See the translation table in [SETUP.md](SETUP.md).
 
 ## ⚡ What Judges Need to See (The Core Story)
