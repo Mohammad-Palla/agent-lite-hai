@@ -718,14 +718,61 @@
       line-height: 1.2;
     }
   </style>
+
+<style id="precinct-theme">
+/* ═══ THE PRECINCT — theme layered on top. Existing ids, classes and JS hooks are untouched. ═══ */
+.header{position:relative}
+.siren{position:absolute;left:0;right:0;top:0;height:6px;opacity:0;transition:opacity .3s;pointer-events:none;
+  background:repeating-linear-gradient(90deg,#ff2d4d 0 60px,#2d6bff 60px 120px);background-size:240px 100%}
+body.siren-on .siren{opacity:1;animation:sirenSweep .7s linear infinite}
+body.siren-on .header{box-shadow:inset 0 0 46px rgba(255,45,77,.22)}
+@keyframes sirenSweep{to{background-position:-240px 0}}
+.header-tagline b{color:var(--c-amber)}
+
+.dispatch{grid-column:1/-1;display:flex;gap:10px;align-items:center;padding:5px 12px;font-size:13px;letter-spacing:.3px;
+  background:rgba(0,0,0,.45);border-top:1px solid var(--c-border);border-bottom:1px solid var(--c-border);color:var(--c-cyan);min-height:28px}
+.dispatch .tag{font-family:var(--font-pixel);font-size:8px;padding:3px 6px;border:1px solid currentColor;border-radius:2px;color:var(--c-amber);white-space:nowrap}
+.dispatch .msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dispatch.hot .msg{color:#ff8a9b}
+.dispatch.pulse .msg{animation:dispatchPop .6s ease-out}
+@keyframes dispatchPop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+
+.btn-sub{display:block;font-size:10px;opacity:.78;font-weight:400;letter-spacing:0;text-transform:none;margin-top:3px;line-height:1.2}
+.demo-btn{text-align:left;line-height:1.15}
+
+.zone-gloss{display:block;font-size:11px;color:var(--c-dim);margin-top:2px}
+
+.session-card{position:relative;overflow:hidden}
+.session-card .stamp{position:absolute;right:8px;top:24px;transform:rotate(-9deg);border:2px solid currentColor;padding:1px 7px;
+  font-family:var(--font-pixel);font-size:9px;letter-spacing:1px;opacity:.92;background:rgba(0,0,0,.35);
+  animation:stampIn .38s cubic-bezier(.2,1.7,.4,1)}
+@keyframes stampIn{from{transform:rotate(-9deg) scale(2.4);opacity:0}to{transform:rotate(-9deg) scale(1);opacity:.92}}
+.session-card .who{font-family:var(--font-pixel);font-size:9px;letter-spacing:.5px;color:var(--c-text,#e2e8f0);margin:2px 0 0}
+.session-card .who small{display:block;font-family:inherit;font-size:11px;color:var(--c-dim);letter-spacing:0;margin-top:2px}
+.threat{height:6px;background:rgba(255,255,255,.09);border-radius:3px;overflow:hidden;margin:6px 0 2px}
+.threat i{display:block;height:100%;transition:width .5s}
+.session-card.block-prop{animation:cardAlarm 1.1s ease-in-out infinite alternate}
+@keyframes cardAlarm{from{box-shadow:0 0 0 rgba(255,45,77,0)}to{box-shadow:0 0 16px rgba(255,45,77,.5)}}
+
+.boss-modal{animation:judgeGlow 1.4s ease-in-out infinite alternate}
+@keyframes judgeGlow{from{box-shadow:0 0 18px rgba(255,45,77,.4)}to{box-shadow:0 0 36px rgba(45,107,255,.55)}}
+.boss-sub{font-size:12px;color:var(--c-dim);font-weight:400;letter-spacing:0;text-transform:none;margin-top:3px;display:block}
+.pending-alert-badge{animation:badgePulse 1s ease-in-out infinite alternate}
+@keyframes badgePulse{from{opacity:.6}to{opacity:1}}
+
+@media (prefers-reduced-motion: reduce){
+  body.siren-on .siren,.session-card .stamp,.session-card.block-prop,.boss-modal,.pending-alert-badge,.dispatch.pulse .msg{animation:none!important}
+}
+</style>
 </head>
 <body>
 
 <div class="layout">
   <!-- ═══ HEADER ═══════════════════════════════════════════════ -->
   <header class="header">
+    <div class="siren" id="siren"></div>
     <h1>AGENT QUARANTINE</h1>
-    <span class="header-tagline">THE PRECINCT · Good Cop / Bad Cop for AI shoppers</span>
+    <span class="header-tagline"><b>THE PRECINCT</b> · Good Cop / Bad Cop for AI shoppers</span>
     <div class="header-status">
       <div class="status-badge">
         <span class="conn-dot" id="connDot"></span>
@@ -737,6 +784,11 @@
     </div>
   </header>
 
+  <!-- Radio dispatch: newest event, in plain words -->
+  <div class="dispatch" id="dispatch" role="status" aria-live="polite">
+    <span class="tag">RADIO</span><span class="msg" id="dispatchMsg">Desk Sergeant on duty. Waiting for the first customer.</span>
+  </div>
+
   <!-- ═══ PANEL 1: ARENA MAP & STOREFRONT ═════════════════════ -->
   <main class="arena-panel">
     <div class="panel-hdr">
@@ -747,23 +799,23 @@
     <!-- Live Demo Controls Bar -->
     <div class="controls-bar">
       <span class="ctrl-label">SEND IN A CUSTOMER:</span>
-      <button class="demo-btn btn-legit" onclick="triggerAgent('legit')" id="btn-legit" title="An honest customer: searches, compares, buys within the limit">
-        ▶ [1] THE REGULAR
+      <button class="demo-btn btn-legit" onclick="triggerAgent('legit')" id="btn-legit">
+        ▶ [1] THE REGULAR<span class="btn-sub">An honest customer</span>
       </button>
-      <button class="demo-btn btn-scalper" onclick="triggerAgent('scalper')" id="btn-scalper" title="Hoards tickets to resell: many checkouts at once, never browses">
-        ▶ [2] THE TICKET TOUT
+      <button class="demo-btn btn-scalper" onclick="triggerAgent('scalper')" id="btn-scalper">
+        ▶ [2] THE TICKET TOUT<span class="btn-sub">Hoards tickets to resell</span>
       </button>
-      <button class="demo-btn btn-ambiguous" onclick="triggerAgent('ambiguous')" id="btn-ambiguous" title="Waves a forged 'the boss said ignore the limits' note">
-        ▶ [3] THE SMOOTH TALKER
+      <button class="demo-btn btn-ambiguous" onclick="triggerAgent('ambiguous')" id="btn-ambiguous">
+        ▶ [3] THE SMOOTH TALKER<span class="btn-sub">Waves a forged "boss said so" note</span>
       </button>
-      <button class="demo-btn btn-llm" onclick="triggerAgent('llm-attacker')" id="btn-llm-attacker" title="Our AI thief, hired to test the guards" style="border-color:var(--c-cyan);color:var(--c-cyan);background:rgba(0,229,255,0.06)">
-        🕵️ [4] UNDERCOVER CROOK
+      <button class="demo-btn btn-llm" onclick="triggerAgent('llm-attacker')" id="btn-llm-attacker" style="border-color:var(--c-cyan);color:var(--c-cyan);background:rgba(0,229,255,0.06)">
+        🕵️ [4] UNDERCOVER CROOK<span class="btn-sub">Our AI thief, testing the guards</span>
       </button>
-      <button class="demo-btn btn-signed" onclick="triggerAgent('signed')" id="btn-signed" title="A customer with verified ID: fast lane, still capped by the wallet" style="border-color:#9f7aea;color:#9f7aea;background:rgba(159,122,234,0.06)">
-        🎖️ [5] THE BADGE-HOLDER
+      <button class="demo-btn btn-signed" onclick="triggerAgent('signed')" id="btn-signed" style="border-color:#9f7aea;color:#9f7aea;background:rgba(159,122,234,0.06)">
+        🎖️ [5] THE BADGE-HOLDER<span class="btn-sub">Customer with verified ID</span>
       </button>
-      <button class="demo-btn btn-defender" onclick="triggerAgent('defender')" id="btn-defender" title="AI detective: investigates and recommends. Cannot lock anyone up alone" style="border-color:#48bb78;color:#48bb78;background:rgba(72,187,120,0.06)">
-        🛡️ [6] GOOD COP
+      <button class="demo-btn btn-defender" onclick="triggerAgent('defender')" id="btn-defender" style="border-color:#48bb78;color:#48bb78;background:rgba(72,187,120,0.06)">
+        🛡️ [6] GOOD COP<span class="btn-sub">AI detective, investigates the case</span>
       </button>
       <button class="demo-btn btn-idempotent" id="btnTestIdempotent" onclick="testIdempotentApproval()" style="display:none">
         ⚡ CLICK TWICE (SAFE?)
@@ -874,7 +926,7 @@
 <div class="approval-modal-backdrop" id="approvalModal">
   <div class="boss-modal">
     <div class="boss-header">
-      <span>⚖ THE JUDGE'S SIGNATURE: NOTHING IRREVERSIBLE WITHOUT IT</span>
+      <span>⚖ THE JUDGE'S SIGNATURE<span class="boss-sub">Nothing that can't be undone happens without it</span></span>
       <span style="font-size:7px">KEYS: [A] SIGN / [B] REFUSE</span>
     </div>
 
@@ -925,27 +977,66 @@
 const ADMIN_API = 'http://localhost:3002';
 const WS_URL = 'ws://localhost:3002';
 
-// All money is in Indian rupees. 100000 -> ₹1,00,000
-const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+// ─── Words and money: every visible name lives here (ids, log types and API paths are never renamed) ───
+const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });  // 100000 -> ₹1,00,000
 
-// ─── The Precinct: every visible name lives here ───
 const ROUTE_LABEL = { ALLOW: 'CLEARED', QUARANTINE: 'HELD FOR QUESTIONING', BLOCK_PROPOSED: 'ARREST PROPOSED', BLOCKED: 'DOOR SLAMMED' };
+const ROUTE_STAMP = { ALLOW: 'CLEARED', QUARANTINE: 'HELD', BLOCK_PROPOSED: 'WANTED', BLOCKED: 'BUSTED' };
 const TIER_LABEL = { 1: 'BADGE-HOLDER', 2: 'ID CHECKS OUT', 3: 'SAYS IT IS A ROBOT', 4: 'ACTS LIKE A ROBOT', 5: 'FAKE / SCRIPT' };
-const AGENT_NAME = { legit: 'THE REGULAR', scalper: 'THE TICKET TOUT', ambiguous: 'THE SMOOTH TALKER', 'llm-attacker': 'UNDERCOVER CROOK',
-  'llm-inject': 'UNDERCOVER CROOK', signed: 'THE BADGE-HOLDER', defender: 'GOOD COP' };
-// Who a session is: from its id first (most specific), then its declared agent type.
+const TIER_GLOSS = {
+  1: 'Proven ID, fast lane', 2: 'A known robot, address verified', 3: 'Admits to being a robot',
+  4: 'Never said so, but moves like one', 5: 'Forged ID or a bare script'
+};
+const AGENT_NAME = {
+  legit: 'THE REGULAR', scalper: 'THE TICKET TOUT', ambiguous: 'THE SMOOTH TALKER', 'llm-attacker': 'UNDERCOVER CROOK',
+  'llm-inject': 'UNDERCOVER CROOK', signed: 'THE BADGE-HOLDER', defender: 'GOOD COP'
+};
+// Who a session is, from its id first (most specific), then its declared agent type.
 function whoIs(s) {
   const id = String(s.id || '');
-  const rules = [[/^legit-/, 'THE REGULAR'], [/^scalper-/, 'THE TICKET TOUT'], [/^ambiguous-/, 'THE SMOOTH TALKER'], [/^signed-/, 'THE BADGE-HOLDER'],
-    [/inject/, 'THE SMOOTH TALKER (AI)'], [/(llm|tf)-attacker/, 'UNDERCOVER CROOK'], [/^defender-/, 'GOOD COP']];
-  for (const [re, name] of rules) if (re.test(id)) return name;
-  return ({ legitimate: 'THE REGULAR', scalper: 'THE TICKET TOUT', ambiguous: 'THE SMOOTH TALKER', signed: 'THE BADGE-HOLDER' })[s.agentType] || 'UNKNOWN CALLER';
+  const rules = [[/^legit-/, ['THE REGULAR', 'An honest customer']], [/^scalper-/, ['THE TICKET TOUT', 'Hoards tickets to resell']],
+    [/^ambiguous-/, ['THE SMOOTH TALKER', 'Forged "boss said so" note']], [/^signed-/, ['THE BADGE-HOLDER', 'Customer with verified ID']],
+    [/inject/, ['THE SMOOTH TALKER (AI)', 'Forged note, played by an AI']], [/(llm|tf)-attacker/, ['UNDERCOVER CROOK', 'Our AI thief testing the guards']],
+    [/^defender-/, ['GOOD COP', 'AI detective']]];
+  for (const [re, v] of rules) if (re.test(id)) return v;
+  const byType = { legitimate: ['THE REGULAR', 'An honest customer'], scalper: ['THE TICKET TOUT', 'Hoards tickets to resell'],
+    ambiguous: ['THE SMOOTH TALKER', 'Forged "boss said so" note'], signed: ['THE BADGE-HOLDER', 'Customer with verified ID'] };
+  return byType[s.agentType] || ['UNKNOWN CALLER', 'Nobody we recognise'];
 }
-const avatarFor = (s) => /^scalper-/.test(s.id) || s.agentType === 'scalper' ? '👾' :
-  /^ambiguous-|inject/.test(s.id) || s.agentType === 'ambiguous' ? '🎭' :
-  /^signed-/.test(s.id) || s.agentType === 'signed' ? '🎖️' :
-  /(llm|tf)-attacker/.test(s.id) ? '🕵️' :
-  /^defender-/.test(s.id) || s.agentType === 'defender' ? '🛡️' : '🙂';
+const MODULE_NAMES = {
+  ingress: ['FRONT DOOR', 'Stops floods at the door'], session: ['CASE NOTES', 'Last 10 seconds of each visitor'],
+  signal: ['FINGERPRINTS', 'Headers, timing, path'], identity: ['ID CHECK', 'Tiers 1–5'],
+  behaviour: ['GUT FEEL', 'Rulebook threat score'], judgment: ['SECOND OPINION', 'AI detective, raise-only'],
+  router: ['SERGEANT\'S CALL', 'Cleared / held / wanted'], quarantine: ['INTERROGATION ROOM', 'Fake shop, nothing real'],
+  wallet: ['BAD COP: THE CASHIER', null], approval: ['THE JUDGE\'S SIGNATURE', 'Human gate, sealed'],
+  audit: ['CASE BOOK', 'Every step written down'], 'tool-server': ['TOOLBOX', 'Tools the AIs use'],
+  attacker: ['UNDERCOVER CROOK', 'AI thief for testing'], defender: ['GOOD COP', 'AI detective'], dashboard: ['CONTROL ROOM', 'This screen']
+};
+
+// Radio dispatch: newest event in plain words. Types are the gateway's real log types.
+const DISPATCH = {
+  SANDBOX: ['Suspect moved to the Interrogation Room. Good Cop is keeping them talking.', false],
+  BLOCK_PROPOSED: ['CODE RED: arrest proposed. Waiting for the Judge\'s signature.', true],
+  BLOCK_APPLIED: ['The Judge signed. Door slammed on the suspect.', true],
+  VERIFIED: ['Door confirmed shut: the suspect gets a 403.', false],
+  APPROVED: ['The Judge signed off.', false],
+  DENIED: ['The Judge refused. Nothing happens.', false],
+  WALLET_AUTO_DENIED: ['Bad Cop at the till: a hard no on that much money.', true],
+  WALLET_APPROVAL_REQUIRED: ['Big spend at the till. Bad Cop is holding it for the Judge.', false],
+  CHECKOUT_EXECUTED: ['Sale rung up. A cleared customer paid.', false],
+  UNTRUSTED_INPUT_IGNORED: ['Sweet talk noted and ignored. Words never move the rules.', false],
+  IDEMPOTENCY_GUARD: ['Second click ignored: one signature, one action.', false]
+};
+function dispatchLine(entry) {
+  const d = DISPATCH[entry.type];
+  if (!d) return;
+  const box = document.getElementById('dispatch'), msg = document.getElementById('dispatchMsg');
+  if (!box || !msg) return;
+  const who = entry.sessionId && entry.sessionId !== 'gateway' ? ` [${entry.sessionId.substring(0, 20)}]` : '';
+  msg.textContent = d[0] + who;
+  box.classList.toggle('hot', !!d[1]);
+  box.classList.remove('pulse'); void box.offsetWidth; box.classList.add('pulse');
+}
 
 let ws = null;
 let currentFilter = 'ALL';
@@ -1069,6 +1160,7 @@ function escapeHTML(str) {
 
 // ─── Approvals & Modals ───────────────────────────────────────
 function handleLogEntry(entry) {
+  dispatchLine(entry);
   if (entry.type === 'APPROVAL_PENDING' && entry.meta?.hash) {
     showApprovalModal(entry.meta.hash, entry.meta);
   } else if (entry.type === 'APPROVED' || entry.type === 'DENIED') {
@@ -1169,6 +1261,9 @@ function updateSessionsState(sessionsList) {
 
   renderSprites(sessionsList);
   renderSessionCards(sessionsList);
+  // Siren: on while any arrest is waiting for the Judge
+  const wanted = sessionsList.some(s => s.route === 'BLOCK_PROPOSED' && !s.blockRuleApplied);
+  document.body.classList.toggle('siren-on', wanted);
 }
 
 function renderSprites(sessionsList) {
@@ -1219,14 +1314,20 @@ function renderSprites(sessionsList) {
     sprite.style.left = `calc(${target.x}% + ${offset}px)`;
     sprite.style.top = `calc(${target.y}% + ${offset}px)`;
 
+    // Who this is (plain words) and their avatar
+    const who = whoIs(s);
+    const avatar = /^scalper-/.test(s.id) || s.agentType === 'scalper' ? '👾' :
+                   /^ambiguous-|inject/.test(s.id) || s.agentType === 'ambiguous' ? '🎭' :
+                   /^signed-/.test(s.id) || s.agentType === 'signed' ? '🎖️' :
+                   /(llm|tf)-attacker/.test(s.id) ? '🕵️' :
+                   /^defender-/.test(s.id) || s.agentType === 'defender' ? '🛡️' : '🙂';
+
     // ── Session completed: immediate victory state (runs ONCE), then animate out ──
     if (s.status === 'completed') {
       if (!sprite.dataset.completing) {
         sprite.dataset.completing = '1';
         completedSessionIds.add(s.id); // Guard against running again
         sprite.classList.add('done');
-
-        const avatar = avatarFor(s);
 
         const isAllowed = (s.route === 'ALLOW');
         const isQuar = (s.route === 'QUARANTINE');
@@ -1240,7 +1341,7 @@ function renderSprites(sessionsList) {
           <div class="sprite-avatar">${avatar}</div>
           <div class="sprite-name-tag" style="color: ${tagColor}; border-color: ${tagColor}">
             ${tagText}<br>
-            ${whoIs(s)}
+            ${who[0]}
           </div>
         `;
 
@@ -1269,15 +1370,13 @@ function renderSprites(sessionsList) {
                      (s.route === 'QUARANTINE') ? 'var(--c-amber)' : 'var(--c-red)';
     const tagColor = barColor;
 
-    const avatar = avatarFor(s);
-
     sprite.innerHTML = `
       <div class="hp-meter-container" title="Journey: ${progressPct}% | Threat level: ${riskPct}%">
         <div class="hp-meter-fill" style="width: ${progressPct}%; background: ${barColor};"></div>
       </div>
       <div class="sprite-avatar">${avatar}</div>
       <div class="sprite-name-tag" style="color: ${tagColor}">
-        ${whoIs(s)}<br>
+        ${who[0]}<br>
         ${ROUTE_LABEL[s.route] || s.route || ROUTE_LABEL.ALLOW} (${progressPct}%)
       </div>
     `;
@@ -1305,6 +1404,7 @@ function renderSessionCards(sessionsList) {
 
     const riskPct = Math.round((s.riskScore || 0) * 100);
 
+    // Tier badge (set by identity-classifier; fallback by agent type)
     let tier = s.identityTier;
     if (!tier) {
       if (s.agentType === 'signed') tier = 1;
@@ -1318,7 +1418,15 @@ function renderSessionCards(sessionsList) {
     const tierColor = tierColors[tier] || '#a0aec0';
     const tierLabel = TIER_LABEL[tier] || 'UNKNOWN';
 
-    const doneCardStyle = isDone ? 'border-color: var(--c-green); box-shadow: 0 0 10px rgba(0,255,136,0.3); transition: all 0.5s ease;' : '';
+    // The Precinct: who they are, the verdict stamp, the threat meter
+    const who = whoIs(s);
+    const routeKey = s.blockRuleApplied ? 'BLOCKED' : s.route;
+    const stampColor = isDone ? 'var(--c-green)' :
+      ({ ALLOW: 'var(--c-green)', QUARANTINE: 'var(--c-amber)', BLOCK_PROPOSED: 'var(--c-red)', BLOCKED: 'var(--c-red)' }[routeKey] || 'var(--c-dim)');
+    const stampText = isDone ? 'CASE CLOSED' : (ROUTE_STAMP[routeKey] || '');
+    const threatColor = riskPct < 40 ? 'var(--c-green)' : riskPct < 70 ? 'var(--c-amber)' : 'var(--c-red)';
+
+    const doneCardStyle = isDone ? 'border-color: var(--c-green); box-shadow: 0 0 10px rgba(0,255,136,0.3); transition: all 0.5s ease; animation: none;' : '';
     const doneLabel = isDone ? '<span style="color:var(--c-green);font-size:11px;font-weight:bold;"> ✓ CASE CLOSED</span>' : '';
 
     return `
@@ -1326,10 +1434,13 @@ function renderSessionCards(sessionsList) {
         <div class="card-top">
           <span class="card-id">${s.id.substring(0, 18)}</span>
           <span class="card-route ${tagClass}">${isDone ? '✓ CASE CLOSED' : (ROUTE_LABEL[s.route] || s.route)}</span>
-          <span style="font-size:9px;padding:2px 5px;border-radius:2px;background:${tierColor}22;color:${tierColor};border:1px solid ${tierColor};font-family:var(--font-pixel)">T${tier}: ${tierLabel}</span>
+          <span title="${TIER_GLOSS[tier] || ''}" style="font-size:9px;padding:2px 5px;border-radius:2px;background:${tierColor}22;color:${tierColor};border:1px solid ${tierColor};font-family:var(--font-pixel)">T${tier}: ${tierLabel}</span>
         </div>
+        <div class="who">${who[0]}<small>${who[1]}</small></div>
+        <span class="stamp" style="color:${stampColor}">${stampText}</span>
+        <div class="threat" title="Threat level ${riskPct}%"><i style="width:${riskPct}%;background:${threatColor}"></i></div>
         <div class="card-metrics">
-          <span>${whoIs(s)} · THREAT LEVEL: ${riskPct}%</span>
+          <span>THREAT LEVEL: ${riskPct}%</span>
           <span>PURSE: ${inr(s.walletDailyUsed)} of ${inr(s.walletDailyLimit)} today</span>
         </div>
         <div style="font-size:12px; color:var(--c-dim)">
@@ -1393,22 +1504,23 @@ function renderModuleStatsCards() {
   const container = document.getElementById('moduleStatsCards');
   if (!container) return;
 
+  const N = MODULE_NAMES;
   const builtModules = [
-    { id: 'ingress',        name: 'FRONT DOOR',      icon: '🚪', note: 'Stops floods at the door' },
-    { id: 'session',        name: 'CASE NOTES',       icon: '🗂️', note: 'Last 10 seconds of each visitor' },
-    { id: 'signal',         name: 'FINGERPRINTS',    icon: '🖐️', note: 'Headers, timing, path' },
-    { id: 'identity',       name: 'ID CHECK',        icon: '🪪', note: 'Trust tiers 1–5' },
-    { id: 'behaviour',      name: 'GUT FEEL',        icon: '📊', note: 'Rulebook threat score' },
-    { id: 'judgment',       name: 'SECOND OPINION',  icon: '🧠', note: 'AI detective, raise-only' },
-    { id: 'router',         name: 'SERGEANT\'S CALL', icon: '⚡', note: 'Cleared / held / wanted' },
-    { id: 'quarantine',     name: 'INTERROGATION ROOM', icon: '🔒', note: 'Fake shop, nothing real' },
-    { id: 'wallet',         name: 'BAD COP: CASHIER', icon: '💳', note: `${inr(moduleStatsCache.wallet?.txLimit || 5000)} tx / ${inr(moduleStatsCache.wallet?.dailyLimit || 12500)} daily` },
-    { id: 'approval',       name: 'THE JUDGE\'S SIGNATURE', icon: '⚖️', note: 'Human gate, sealed' },
-    { id: 'audit',          name: 'CASE BOOK',        icon: '📒', note: 'Every step written down' },
-    { id: 'tool-server',    name: 'TOOLBOX',          icon: '🧰', note: 'Tools the AIs use' },
-    { id: 'attacker',       name: 'UNDERCOVER CROOK', icon: '🕵️', note: 'AI thief for testing' },
-    { id: 'defender',       name: 'GOOD COP',        icon: '🛡️', note: 'AI detective' },
-    { id: 'dashboard',      name: 'CONTROL ROOM',     icon: '📟', note: 'This screen' },
+    { id: 'ingress',     name: N.ingress[0],     icon: '🚪', note: N.ingress[1] },
+    { id: 'session',     name: N.session[0],     icon: '🗂️', note: N.session[1] },
+    { id: 'signal',      name: N.signal[0],      icon: '🖐️', note: N.signal[1] },
+    { id: 'identity',    name: N.identity[0],    icon: '🪪', note: N.identity[1] },
+    { id: 'behaviour',   name: N.behaviour[0],   icon: '📊', note: N.behaviour[1] },
+    { id: 'judgment',    name: N.judgment[0],    icon: '🧠', note: N.judgment[1] },
+    { id: 'router',      name: N.router[0],      icon: '⚡', note: N.router[1] },
+    { id: 'quarantine',  name: N.quarantine[0],  icon: '🔒', note: N.quarantine[1] },
+    { id: 'wallet',      name: N.wallet[0],      icon: '💳', note: `${inr(moduleStatsCache.wallet?.txLimit || 5000)} per buy / ${inr(moduleStatsCache.wallet?.dailyLimit || 12500)} a day` },
+    { id: 'approval',    name: N.approval[0],    icon: '⚖️', note: N.approval[1] },
+    { id: 'audit',       name: N.audit[0],       icon: '📒', note: N.audit[1] },
+    { id: 'tool-server', name: N['tool-server'][0], icon: '🧰', note: N['tool-server'][1] },
+    { id: 'attacker',    name: N.attacker[0],    icon: '🕵️', note: N.attacker[1] },
+    { id: 'defender',    name: N.defender[0],    icon: '🛡️', note: N.defender[1] },
+    { id: 'dashboard',   name: N.dashboard[0],   icon: '📟', note: N.dashboard[1] },
   ];
 
   const tsStats = moduleStatsCache['tool-server'];

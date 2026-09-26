@@ -78,8 +78,11 @@ If a pending gateway approval clearly needs a decision, call apply_policy with t
   if (health.status !== 200) { console.error(`TrueForge not reachable at ${BASE}: ${errText(health)}\nStart it with: npm run trueforge`); process.exit(1); }
 
   const modelName = MODEL.split('/')[1];
-  let r = await call('POST', '/settings/model-providers', { manifest: { type: 'openai', auth: { api_key: process.env.OPENAI_API_KEY }, models: [{ model_id: modelName, name: modelName, properties: { reasoning_efforts: ['none', 'low', 'medium', 'high'] } }] } });
-  console.log(`model provider openai: ${r.status === 201 ? 'created' : r.status === 409 ? 'already exists' : `HTTP ${r.status} ${errText(r)}`}`);
+  // TrueForge keeps its own copy of the key (it does not read .env). On re-runs, refresh it so a changed key in .env takes effect.
+  const providerBody = { manifest: { type: 'openai', auth: { api_key: process.env.OPENAI_API_KEY }, models: [{ model_id: modelName, name: modelName, properties: { reasoning_efforts: ['none', 'low', 'medium', 'high'] } }] } };
+  let r = await call('POST', '/settings/model-providers', providerBody);
+  if (r.status === 409) r = await call('PUT', '/settings/model-providers', providerBody);
+  console.log(`model provider openai: ${r.status === 201 ? 'created' : [200, 204].includes(r.status) ? 'key refreshed from .env' : `HTTP ${r.status} ${errText(r)}`}`);
 
   r = await call('POST', '/settings/mcp-servers', { manifest: { type: 'remote', name: 'shop-tools', url: TOOL_URL, description: 'Shop tools for the AgentQuarantine store (search, view, add to cart, checkout) plus defender tools (query events, active sessions, identity checks, apply policy). Every call goes through the AgentQuarantine gateway, which scores risk, applies wallet limits and can require a human approval.' } });
   console.log(`mcp server shop-tools: ${r.status === 201 ? 'created' : r.status === 409 ? 'already exists' : `HTTP ${r.status} ${errText(r)}`}`);
