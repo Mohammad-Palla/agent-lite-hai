@@ -1,0 +1,32 @@
+{
+  "name": "agent-quarantine",
+  "version": "1.0.0",
+  "description": "AgentQuarantine — behavioral risk-scoring + wallet-firewall gateway for AI shopping agents",
+  "main": "gateway/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "gateway": "node gateway/server.js",
+    "storefront": "node storefront/server.js",
+    "ui": "node ui/server.js",
+    "agents:legit": "node agents/legitimate.js",
+    "agents:scalper": "node agents/scalper.js",
+    "agents:ambiguous": "node agents/ambiguous.js",
+    "demo": "node scripts/demo.js",
+    "start": "node scripts/start-all.js"
+  },
+  "dependencies": {
+    "@truefoundry/trueforge": "^0.2.1",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "uuid": "^9.0.0",
+    "ws": "^8.14.2"
+  },
+  "keywords": [
+    "agents",
+    "security",
+    "hackathon",
+    "trueforge"
+  ],
+  "author": "",
+  "license": "ISC"
+}
