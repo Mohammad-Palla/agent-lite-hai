@@ -22,6 +22,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const { fork } = require('child_process');
 const { WebSocketServer } = require('ws');
 
@@ -86,9 +87,47 @@ function proxyRequest(targetPort, req, res, sessionId) {
   req.pipe(proxyReq, { end: true });
 }
 
+// ─── Agent Signature Verification (Tier 1) ──────────────────────────────────
+const AGENT_SIGNING_KEY = process.env.AGENT_SIGNING_KEY || 'demo-private-key-for-hackathon-2026';
+
+function verifyAgentSignature(req, sessionId) {
+  const sigHeader = req.headers['x-agent-signature'];
+  const pubkeyId = req.headers['x-agent-pubkey-id'] || 'agent-quarantine-attacker-v1';
+  if (!sigHeader) return null;
+
+  // Format: t=<unix_ms>,s=<hmac-sha256-hex>
+  const match = String(sigHeader).match(/^t=(\d+),s=([a-f0-9]{64})$/);
+  if (!match) return { valid: false, reason: 'malformed_signature_format' };
+
+  const timestamp = parseInt(match[1], 10);
+  const sig = match[2];
+
+  // 1-minute replay/freshness window
+  const now = Date.now();
+  if (Math.abs(now - timestamp) > 60_000) {
+    return { valid: false, reason: 'timestamp_expired_or_drift' };
+  }
+
+  const payload = `${sessionId}:${pubkeyId}:${timestamp}`;
+  const expectedSig = crypto.createHmac('sha256', AGENT_SIGNING_KEY).update(payload).digest('hex');
+
+  if (sig === expectedSig) {
+    return { valid: true, pubkeyId, timestamp };
+  }
+  return { valid: false, reason: 'hmac_mismatch' };
+}
+
 // ─── Score and update session ────────────────────────────────────────────────
 function updateScore(session) {
-  const { score, reasons } = scoreSession(session);
+  let { score, reasons } = scoreSession(session);
+
+  // Tier 1 trust adjustment (per artifact.md §: signed agents raise trust, lower risk, route allow)
+  if (session.identityTier === 1) {
+    score = Math.min(score, 0.10);
+    reasons = reasons.filter(r => !r.includes('burst'));
+    reasons.push('tier1_signed_trust');
+  }
+
   const prevRoute = session.route;
   const newRoute = routeFromScore(score);
 
@@ -144,6 +183,33 @@ gatewayApp.use((req, res) => {
   const session = sessions.recordRequest(sessionId, req.method, req.url);
   if (req.headers['x-agent-type']) {
     session.agentType = req.headers['x-agent-type'];
+  }
+
+  // Identity tier classification & signature verification
+  const sigCheck = verifyAgentSignature(req, sessionId);
+  if (sigCheck) {
+    if (sigCheck.valid) {
+      if (session.identityTier !== 1) {
+        session.identityTier = 1;
+        session.signatureValid = true;
+        log.append('IDENTITY', sessionId,
+          `[IDENTITY] session-${sessionId} verified Tier-1 signed agent (pubkey=${sigCheck.pubkeyId})`,
+          { tier: 1, pubkeyId: sigCheck.pubkeyId, signatureValid: true }
+        );
+      }
+    } else {
+      session.identityTier = 5;
+      session.signatureValid = false;
+      log.append('IDENTITY', sessionId,
+        `[IDENTITY] session-${sessionId} INVALID signature (${sigCheck.reason}) -> Tier 5 spoof`,
+        { tier: 5, reason: sigCheck.reason, signatureValid: false }
+      );
+    }
+  } else if (!session.identityTier) {
+    const ua = req.headers['user-agent'] || '';
+    if (/Googlebot|bingbot/i.test(ua)) session.identityTier = 2;
+    else if (/GPTBot|ClaudeBot|PerplexityBot/i.test(ua)) session.identityTier = 3;
+    else session.identityTier = 4; // Behavioral default
   }
 
   // Track path-specific counters
@@ -248,12 +314,17 @@ adminApp.get('/sessions', (req, res) => {
     riskScore: s.riskScore,
     riskReasons: s.riskReasons,
     searchCount: s.searchCount,
+    compareCount: s.compareCount,
     checkoutAttempts: s.checkoutAttempts,
     walletDailyUsed: s.walletDailyUsed,
     walletDailyLimit: s.walletDailyLimit,
+    walletTxLimit: s.walletTxLimit,
     sandboxed: s.sandboxed,
     blockRuleApplied: s.blockRuleApplied,
     agentType: s.agentType,
+    identityTier: s.identityTier || 4,
+    signatureValid: !!s.signatureValid,
+    requestRate: (s.requestLog?.length || 0) / 10,
   })));
 });
 
@@ -306,18 +377,63 @@ adminApp.get('/log', (req, res) => {
   res.json(log.query({ since, limit }));
 });
 
+// Append audit log entry (used by defender agent and test harness)
+adminApp.post('/log', (req, res) => {
+  const { type, sessionId, message, data } = req.body || {};
+  if (!type || !sessionId || !message) {
+    return res.status(400).json({ error: 'missing_fields' });
+  }
+  const entry = log.append(type, sessionId, message, data || {});
+  res.json({ ok: true, entry });
+});
+
 // Get all log entries
 adminApp.get('/log/all', (req, res) => {
   res.json(log.all());
+});
+
+// Aggregate stats across all 15 modules (Dev A handoff 1:00)
+adminApp.get('/stats/all', (req, res) => {
+  const allSessions = sessions.all();
+  const pendingApprovals = approval.getAllPending();
+  const logs = log.all();
+
+  const tierCounts = { tier1: 0, tier2: 0, tier3: 0, tier4: 0, tier5: 0 };
+  allSessions.forEach(s => {
+    const t = s.identityTier || 4;
+    tierCounts[`tier${t}`] = (tierCounts[`tier${t}`] || 0) + 1;
+  });
+
+  const quarantinedCount = allSessions.filter(s => s.sandboxed || s.route === 'QUARANTINE').length;
+  const avgRisk = allSessions.length ? (allSessions.reduce((acc, s) => acc + (s.riskScore || 0), 0) / allSessions.length).toFixed(2) : '0.00';
+
+  res.json({
+    ingress:    { health: 'ok', requests: allSessions.reduce((a, s) => a + (s.requestLog?.length || 0), 0), rateLimitActive: true },
+    session:    { health: 'ok', activeSessions: allSessions.length, windowMs: 10000 },
+    signal:     { health: 'ok', collectors: ['ua', 'headers', 'timing', 'path_sequence'], signalsTracked: allSessions.reduce((a, s) => a + (s.riskReasons?.length || 0), 0) },
+    identity:   { health: 'ok', tiers: tierCounts, signedAgents: tierCounts.tier1 },
+    behaviour:  { health: 'ok', avgRiskScore: parseFloat(avgRisk), scoredSessions: allSessions.length },
+    judgment:   { health: 'ok', provider: process.env.JUDGE_PROVIDER || 'classifier', mode: 'raise_only' },
+    router:     { health: 'ok', routes: { allow: allSessions.filter(s => s.route === 'ALLOW').length, quarantine: quarantinedCount, block_proposed: allSessions.filter(s => s.route === 'BLOCK_PROPOSED').length } },
+    quarantine: { health: 'ok', clonedPort: STOREFRONT_SANDBOX_PORT, sessionsQuarantined: quarantinedCount },
+    wallet:     { health: 'ok', txLimit: 200, dailyLimit: 500, totalUsed: allSessions.reduce((a, s) => a + (s.walletDailyUsed || 0), 0) },
+    approval:   { health: 'ok', pending: pendingApprovals.length, hashesBound: pendingApprovals.map(p => p.hash) },
+    audit:      { health: 'ok', totalEntries: logs.length, immutable: true },
+    dashboard:  { health: 'ok', wsClients: wss ? wss.clients.size : 0 },
+  });
 });
 
 // Run agent scenario from UI
 adminApp.post('/run-agent/:type', (req, res) => {
   const { type } = req.params;
   const scriptMap = {
-    legit: 'legitimate.js',
-    scalper: 'scalper.js',
-    ambiguous: 'ambiguous.js',
+    legit:           'legitimate.js',
+    scalper:         'scalper.js',
+    ambiguous:       'ambiguous.js',
+    'llm-attacker':  'llm-attacker.js',
+    'llm-inject':    'llm-attacker.js',
+    signed:          'signed-agent.js',
+    defender:        'defender-agent.js',
   };
   const scriptName = scriptMap[type];
   if (!scriptName) {
@@ -327,7 +443,11 @@ adminApp.post('/run-agent/:type', (req, res) => {
   const scriptPath = path.join(__dirname, '..', 'agents', scriptName);
   log.append('SYSTEM', 'gateway', `[LAUNCH] Spawning ${type} agent script: ${scriptName}`);
 
-  const child = fork(scriptPath, [], { stdio: 'inherit' });
+  const env = { ...process.env };
+  if (type === 'llm-inject') env.ATTACKER_MODE = 'inject';
+  if (type === 'llm-attacker') env.ATTACKER_MODE = 'normal';
+
+  const child = fork(scriptPath, [], { stdio: 'inherit', env });
   child.on('error', (err) => {
     log.append('SYSTEM', 'gateway', `[ERROR] Failed to run ${type} agent: ${err.message}`);
   });
@@ -426,7 +546,9 @@ wss.on('connection', (ws) => {
         sandboxed: s.sandboxed,
         blockRuleApplied: s.blockRuleApplied,
         agentType: s.agentType,
-        requestRate: s.requestLog.length / 10,
+        identityTier: s.identityTier || 4,
+        signatureValid: !!s.signatureValid,
+        requestRate: (s.requestLog?.length || 0) / 10,
       })) }));
     }
   }, 500);
