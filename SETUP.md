@@ -94,8 +94,8 @@ Three layers. Run the first two often; run the third before a demo.
 | Command | Layer | Needs | Time | Tests |
 |---|---|---|---|---|
 | `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 15 |
-| `npm run test:e2e` | boots storefront + gateway on ports 13001/13002, plays the scenarios over HTTP | ports 13001, 13002, 3003, 3004 free | about 25 s | 14 |
-| `npm test` | unit + e2e | as above | about 30 s | 29 |
+| `npm run test:e2e` | boots storefront + gateway on ports 13001/13002, plays the scenarios over HTTP | ports 13001, 13002, 3003, 3004 free | about 15 s | 14 |
+| `npm test` | unit + e2e | as above | about 15 s | 29 |
 | `npm run test:live` | your real jev, OpenAI, Neon, tool server and LLM agents | keys in `.env`, port 13007 free | 3 to 6 min | 11 |
 | `npm run test:judges` | jev vs OpenAI on 10 labelled sessions, prints a comparison table | both keys | about 1 min | (report) |
 
