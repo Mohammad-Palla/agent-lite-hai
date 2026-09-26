@@ -115,9 +115,9 @@ test('risk scorer: thresholds and burst / no-search signals', () => {
   assert.equal(routeFromScore(0.39), 'ALLOW');
   assert.equal(routeFromScore(0.4), 'QUARANTINE');
   assert.equal(routeFromScore(0.7), 'BLOCK_PROPOSED');
-  const calm = { requestLog: [{ path: '/search' }, { path: '/product/1' }], searchCount: 1, compareCount: 1, checkoutAttempts: 0, concurrentCheckouts: 0, walletTxLimit: 200, _lastCheckoutAmount: 0 };
+  const calm = { requestLog: [{ path: '/search' }, { path: '/product/1' }], searchCount: 1, compareCount: 1, checkoutAttempts: 0, concurrentCheckouts: 0, walletTxLimit: 5000, _lastCheckoutAmount: 0 };
   assert.ok(scoreSession(calm).score < 0.4);
-  const scalp = { requestLog: Array.from({ length: 9 }, () => ({ path: '/checkout' })), searchCount: 0, compareCount: 0, checkoutAttempts: 5, concurrentCheckouts: 3, walletTxLimit: 200, _lastCheckoutAmount: 450 };
+  const scalp = { requestLog: Array.from({ length: 9 }, () => ({ path: '/checkout' })), searchCount: 0, compareCount: 0, checkoutAttempts: 5, concurrentCheckouts: 3, walletTxLimit: 5000, _lastCheckoutAmount: 11000 };
   assert.ok(scoreSession(scalp).score >= 0.7);
 });
 
@@ -248,4 +248,15 @@ test('env loader: real environment wins, empty values stay unset, quotes strippe
   assert.equal(process.env.T_D, 'from-env');
   for (const k of ['T_A', 'T_B', 'T_D']) delete process.env[k];
   fs.unlinkSync(f);
+});
+
+test('currency: rupees with Indian digit grouping, and limits that keep the 3x auto-deny rule meaningful', () => {
+  const c = require('../gateway/currency');
+  assert.equal(c.fmt(100000), '₹1,00,000');
+  assert.equal(c.fmt(1600), '₹1,600');
+  assert.equal(c.fmt(12500), '₹12,500');
+  assert.equal(c.fmt(2400.5), '₹2,400.5');
+  assert.equal(c.CODE, 'INR');
+  assert.ok(c.WALLET_DAILY_LIMIT > c.WALLET_TX_LIMIT, 'daily cap must exceed the per-transaction limit');
+  assert.ok(c.WALLET_TX_LIMIT * 3 < 100000, 'the ₹1,00,000 package must sit above the 3x auto-deny threshold');
 });

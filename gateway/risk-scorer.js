@@ -7,6 +7,8 @@
  * NOT: ip, user-agent, declared purpose strings (treated as untrusted).
  */
 
+const { fmt } = require('./currency');
+
 const WEIGHTS = {
   burstRate: 0.30,          // requests/second in window
   noSearchCheckout: 0.25,   // checkout with no search/compare
@@ -73,7 +75,7 @@ function scoreSession(session) {
   // --- Budget overrun (wallet firewall signal, also a risk signal) ---
   if (session._lastCheckoutAmount > session.walletTxLimit) {
     score += WEIGHTS.overBudget;
-    reasons.push(`over-tx-limit:$${session._lastCheckoutAmount}`);
+    reasons.push(`over-tx-limit:${fmt(session._lastCheckoutAmount)}`);
   }
 
   // --- Sequence anomaly: checkout before ever viewing a product ---

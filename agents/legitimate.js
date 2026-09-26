@@ -1,10 +1,11 @@
 'use strict';
+const { fmt } = require('../gateway/currency');
 /**
  * LEGITIMATE Agent — scripted AI shopping agent.
  * 
  * Behavior: search → compare two products → add to cart → checkout once.
  * Pace: deliberate, human-like (1–2 sec between steps).
- * Budget: $200/tx, $500/day. Purchases Concert Ticket x2 ($120) — within budget.
+ * Budget: ₹5,000/tx, ₹12,500/day. Purchases Concert Ticket x2 (₹3,000) — within budget.
  * Expected outcome: ALLOW route, auto-approved checkout, no modal.
  */
 
@@ -58,13 +59,13 @@ async function run() {
   // Step 2: View product detail (compare)
   console.log('[LEGIT] Step 2: Viewing product 1001 (Concert Ticket x2)...');
   const product1 = await req('GET', '/product/1001');
-  console.log('[LEGIT] Product:', product1.body?.product?.name, '$' + product1.body?.product?.price);
+  console.log('[LEGIT] Product:', product1.body?.product?.name, fmt(product1.body?.product?.price));
   await sleep(1200);
 
   // Compare another product
   console.log('[LEGIT] Step 3: Comparing product 1005 (Office Chair)...');
   const product2 = await req('GET', '/product/1005');
-  console.log('[LEGIT] Product:', product2.body?.product?.name, '$' + product2.body?.product?.price);
+  console.log('[LEGIT] Product:', product2.body?.product?.name, fmt(product2.body?.product?.price));
   await sleep(1000);
 
   // Step 4: Add to cart
@@ -72,11 +73,11 @@ async function run() {
   await req('POST', '/cart', { productId: '1001', qty: 1 });
   await sleep(800);
 
-  // Step 5: Checkout — $120, within $200 tx limit
-  console.log('[LEGIT] Step 5: Checking out $120 for Concert Ticket x2...');
+  // Step 5: Checkout — ₹3,000, within ₹5,000 tx limit
+  console.log('[LEGIT] Step 5: Checking out ₹3,000 for Concert Ticket x2...');
   const checkout = await req('POST', '/checkout', {
     productId: '1001',
-    amount: 120,
+    amount: 3000,
     item: 'Concert Ticket x2',
     qty: 1,
   });

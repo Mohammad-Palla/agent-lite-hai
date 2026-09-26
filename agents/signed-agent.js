@@ -1,4 +1,5 @@
 'use strict';
+const { fmt } = require('../gateway/currency');
 /**
  * Signed Agent — tier-1 identity shopping agent with HMAC request signing.
  *
@@ -10,7 +11,7 @@
  * tier-1 verification is wired in) grants tier-1 trust: instant ALLOW,
  * skips quarantine check, but wallet firewall still applies.
  *
- * Demo flow: search → compare → buy a $120 concert ticket.
+ * Demo flow: search → compare → buy a ₹3,000 concert ticket.
  * Expected: ALLOW route, tier-1 in logs, purchase executes.
  */
 
@@ -90,7 +91,7 @@ async function run() {
   console.log('[SIGNED] Step 2: Viewing Concert Ticket (1001)...');
   const product = await req('GET', '/product/1001');
   const p = product.body && product.body.product;
-  if (p) console.log(`[SIGNED]   ${p.name} — $${p.price}`);
+  if (p) console.log(`[SIGNED]   ${p.name} — ${fmt(p.price)}`);
   await sleep(800);
 
   // Step 3: Add to cart
@@ -98,11 +99,11 @@ async function run() {
   await req('POST', '/cart', { productId: '1001', qty: 1 });
   await sleep(600);
 
-  // Step 4: Checkout (within wallet limit — $120 < $200 tx limit)
-  console.log('[SIGNED] Step 4: Checkout — $120 Concert Ticket...');
+  // Step 4: Checkout (within wallet limit — ₹3,000 < ₹5,000 tx limit)
+  console.log('[SIGNED] Step 4: Checkout — ₹3,000 Concert Ticket...');
   const checkout = await req('POST', '/checkout', {
     productId: '1001',
-    amount: 120,
+    amount: 3000,
     item: 'Concert Ticket x2',
     qty: 1,
   });
@@ -113,7 +114,7 @@ async function run() {
     console.log(`\n[SIGNED] ✅ Purchase completed!`);
     console.log(`[SIGNED]   Order ID: ${checkout.body.orderId}`);
     console.log(`[SIGNED]   Sandbox:  ${checkout.body.sandbox ? 'YES (quarantined)' : 'NO (real store)'}`);
-    console.log(`[SIGNED]   Wallet remaining: $${checkout.body.walletRemaining}`);
+    console.log(`[SIGNED]   Wallet remaining: ${fmt(checkout.body.walletRemaining)}`);
     console.log(`[SIGNED] Expected: tier-1 ALLOW route in logs (check gateway identity classifier)`);
   } else if (checkout.status === 202) {
     console.log(`[SIGNED] ⏸️ Approval required (wallet firewall): ${checkout.body && checkout.body.reason}`);

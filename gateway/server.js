@@ -37,6 +37,7 @@ const registry = require('./registry');
 const auditBridge = require('./audit-bridge');
 const signals = require('./signals');
 const signature = require('./signature');
+const { WALLET_TX_LIMIT, WALLET_DAILY_LIMIT, CODE: CURRENCY_CODE } = require('./currency');
 const router = require('./router');
 const persistence = require('./persistence');
 const moduleSet = require('./modules');
@@ -328,7 +329,7 @@ function statsWithDashboardKeys() {
     judgment:   { health: h('llm-behaviour-scorer'), provider: cus('llm-behaviour-scorer').primary, fallback: cus('llm-behaviour-scorer').fallback, mode: 'raise_only', calls: cnt('llm-behaviour-scorer', 'calls'), fallbacks: cnt('llm-behaviour-scorer', 'fallbacks'), providerFallbacks: cnt('llm-behaviour-scorer', 'provider_fallbacks'), injectionsFlagged: cnt('llm-behaviour-scorer', 'injections_flagged') },
     router:     { health: h('risk-router'), routes: { allow: live.filter(s => s.route === 'ALLOW').length, quarantine: quarantined, block_proposed: live.filter(s => s.route === 'BLOCK_PROPOSED').length }, decisions: cnt('risk-router', 'scored_final') },
     quarantine: { health: h('quarantine-store'), clonedPort: STOREFRONT_SANDBOX_PORT, sessionsQuarantined: quarantined, requestsDiverted: cnt('quarantine-store', 'requests_diverted'), realStateMutations: cnt('quarantine-store', 'real_state_mutations') },
-    wallet:     { health: h('wallet-firewall'), txLimit: 200, dailyLimit: 500, totalUsed: live.reduce((a, s) => a + (s.walletDailyUsed || 0), 0), autoDeny: cnt('wallet-firewall', 'auto_deny'), needsApproval: cnt('wallet-firewall', 'needs_approval') },
+    wallet:     { health: h('wallet-firewall'), txLimit: WALLET_TX_LIMIT, dailyLimit: WALLET_DAILY_LIMIT, currency: CURRENCY_CODE, totalUsed: live.reduce((a, s) => a + (s.walletDailyUsed || 0), 0), autoDeny: cnt('wallet-firewall', 'auto_deny'), needsApproval: cnt('wallet-firewall', 'needs_approval') },
     approval:   { health: h('approval-engine'), pending: pend.length, hashesBound: pend.map(p => p.hash) },
     audit:      { health: h('audit-log'), totalEntries: cnt('audit-log', 'events'), persistedRows: (cus('audit-log').persistence || {}).persisted_rows || 0 },
     dashboard:  { health: h('dashboard-bridge'), wsClients: wss ? wss.clients.size : 0 },

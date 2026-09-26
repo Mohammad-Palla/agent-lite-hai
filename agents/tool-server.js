@@ -1,4 +1,5 @@
 'use strict';
+const { fmt } = require('../gateway/currency');
 /**
  * Tool Server — MCP tool server for AgentQuarantine.
  *
@@ -202,7 +203,7 @@ defineTool(
     }
     const items = result.body && result.body.results ? result.body.results : [];
     const text = items.length
-      ? `Found ${items.length} products:\n` + items.map(i => `  • [${i.id}] ${i.name} — $${i.price}`).join('\n')
+      ? `Found ${items.length} products:\n` + items.map(i => `  • [${i.id}] ${i.name} — ${fmt(i.price)}`).join('\n')
       : 'No products found for that query.';
     return { content: [{ type: 'text', text }], status: result.status, results: items, count: items.length };
   }
@@ -225,7 +226,7 @@ defineTool(
     const p = result.body && result.body.product;
     if (!p) return { content: [{ type: 'text', text: 'Product not found.' }], status: 404 };
     return {
-      content: [{ type: 'text', text: `Product: ${p.name}\nID: ${p.id}\nPrice: $${p.price}\nCategory: ${p.category || 'N/A'}\nDescription: ${p.description || 'N/A'}\nIn stock: ${p.stock != null ? p.stock : 'unknown'}` }],
+      content: [{ type: 'text', text: `Product: ${p.name}\nID: ${p.id}\nPrice: ${fmt(p.price)}\nCategory: ${p.category || 'N/A'}\nDescription: ${p.description || 'N/A'}\nIn stock: ${p.stock != null ? p.stock : 'unknown'}` }],
       status: result.status,
       product: p,
     };
@@ -256,7 +257,7 @@ defineTool(
   'Attempt to purchase an item. The gateway applies wallet limits, risk scoring, and may require human approval. This is an irreversible action.',
   {
     product_id: z.string().describe('Product ID to purchase'),
-    amount: z.number().positive().describe('Purchase amount in USD'),
+    amount: z.number().positive().describe('Purchase amount in Indian rupees (INR)'),
     item: z.string().describe('Human-readable item name'),
     qty: z.number().int().min(1).default(1),
     session_id: z.string().optional(),
@@ -270,7 +271,7 @@ defineTool(
     const result = await gatewayReq('POST', '/checkout', body, session_id, headers);
     let text;
     if (result.status === 200 && result.body && result.body.status === 'success') {
-      text = `✅ Checkout succeeded!\nOrder ID: ${result.body.orderId}\nWallet remaining: $${result.body.walletRemaining}\nSandboxed: ${result.body.sandbox ? 'YES (quarantine)' : 'NO (real)'}`;
+      text = `✅ Checkout succeeded!\nOrder ID: ${result.body.orderId}\nWallet remaining: ${fmt(result.body.walletRemaining)}\nSandboxed: ${result.body.sandbox ? 'YES (quarantine)' : 'NO (real)'}`;
     } else if (result.status === 202) {
       text = `⏸️ Approval required — human must approve before purchase executes.\nApproval hash: ${result.body && result.body.approvalHash}\nReason: ${result.body && result.body.reason}`;
     } else if (result.status === 402) {

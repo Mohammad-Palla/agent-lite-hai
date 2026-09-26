@@ -5,6 +5,7 @@
  */
 
 const { randomUUID } = require('crypto');
+const { WALLET_TX_LIMIT, WALLET_DAILY_LIMIT } = require('./currency');
 
 const WINDOW_MS = 10_000;   // 10-second rolling window for burst detection
 const MAX_SESSIONS = 2000;
@@ -30,8 +31,8 @@ class SessionStore {
         riskScore: 0,
         riskReasons: [],
         walletDailyUsed: 0,
-        walletDailyLimit: 500,
-        walletTxLimit: 200,
+        walletDailyLimit: WALLET_DAILY_LIMIT,
+        walletTxLimit: WALLET_TX_LIMIT,
         blockRuleApplied: false,
         blockRuleHash: null,
         pendingApprovals: new Map(),  // hash → { action, ts, applied }

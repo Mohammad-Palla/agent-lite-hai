@@ -2,7 +2,7 @@
 /**
  * SCALPER Agent — hammers /checkout with high concurrency, no search/compare.
  *
- * Behavior: blasts POST /checkout for product 1002 (Limited Sneaker $280)
+ * Behavior: blasts POST /checkout for product 1002 (Limited Sneaker ₹7,000)
  *   with 5 concurrent requests, repeated 3 rounds. No search, no compare.
  * 
  * Expected outcome:
@@ -57,7 +57,7 @@ async function blastCheckouts(round) {
   const promises = Array.from({ length: CONCURRENCY }, (_, i) =>
     req('POST', '/checkout', {
       productId: '1002',
-      amount: 280,
+      amount: 7000,
       item: 'Limited Sneaker (Pair)',
       qty: 1,
     })
