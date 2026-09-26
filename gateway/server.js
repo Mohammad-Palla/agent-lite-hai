@@ -530,6 +530,8 @@ adminServer.listen(ADMIN_PORT, () => {
   log.append('SYSTEM', 'gateway', `[SYSTEM] Admin API started on :${ADMIN_PORT}`);
 });
 
+moduleSet.warmupJudge();
+
 persistence.start(log).then((r) => {
   console.log(`[Persist] ${r.enabled ? `audit log → Neon (run ${r.runId}, ${r.ready ? 'ready' : 'connecting, will retry'})` : 'disabled (no DATABASE_URL or PERSIST_AUDIT=off)'}`);
 }).catch((err) => console.error('[Persist] start failed:', err.message));

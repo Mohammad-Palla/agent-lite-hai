@@ -118,7 +118,26 @@ const behaviourScorer = defineModule({
 
 // 5b. llm-behaviour-scorer — raise-only judgment; 800ms budget; falls back to deterministic alone
 const judgment = require('../judgment');
-const judgeDeps = { fetchImpl: undefined, provider: null, key: null, timeoutMs: judgment.BUDGET_MS, minGapMs: 2000, maxInflight: 3 };
+// Each provider has its own key: jev → TYPESAFE_API_KEY, openai → OPENAI_API_KEY, classifier → CLASSIFIER_KEY
+const judgeKey = (provider) => ({ jev: process.env.TYPESAFE_API_KEY, openai: process.env.OPENAI_API_KEY, classifier: process.env.CLASSIFIER_KEY }[provider]) || undefined;
+const judgeDeps = { fetchImpl: undefined, provider: null, fallback: null, key: null, timeoutMs: null, minGapMs: 2000, maxInflight: 3 };
+// Primary + optional fallback (JUDGE_PROVIDER, JUDGE_FALLBACK). A fallback is only used when its key exists.
+const primaryName = () => judgeDeps.provider || process.env.JUDGE_PROVIDER || 'classifier';
+const fallbackName = () => {
+  const f = judgeDeps.fallback ?? process.env.JUDGE_FALLBACK;
+  return f && f !== primaryName() && f !== 'none' && (judgeDeps.key || judgeKey(f)) ? f : null;
+};
+// Circuit breaker: after 3 consecutive primary failures skip it for 30s so a dead primary costs no latency.
+const breaker = { fails: 0, openUntil: 0 };
+const BREAKER_FAILS = 3, BREAKER_MS = 30_000;
+function buildChain() {
+  const chain = [];
+  const p = primaryName(), f = fallbackName();
+  const primaryOpen = Date.now() < breaker.openUntil;
+  if (!(primaryOpen && f)) chain.push({ provider: p, key: judgeDeps.key || judgeKey(p) });
+  if (f) chain.push({ provider: f, key: judgeDeps.key || judgeKey(f) });
+  return chain;
+}
 const judgeState = new Map();   // sessionId → collected facts + throttle state
 const judgeLatency = [];
 let inflight = 0;
@@ -126,6 +145,45 @@ const pctl = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort
 
 function judgeFacts(s) {
   return { ...s.signals, ...s.checkout, reasons: s.reasons, window_requests: s.window_requests, justification: s.justification };
+}
+
+
+function runJudgment(id, s, traceId, ctx, st) {
+  s.busy = true; s.pending = false; s.last = Date.now(); inflight++;
+  const chain = buildChain();
+  const t0 = Date.now();
+  st.inc('calls');
+  judgment.judgeChain(judgeFacts(s), chain, { fetchImpl: judgeDeps.fetchImpl, timeoutMs: judgeDeps.timeoutMs || undefined })
+    .then((r) => {
+      judgeLatency.push(Date.now() - t0); if (judgeLatency.length > 200) judgeLatency.shift();
+      st.inc(`served_by_${r.provider}`);
+      const primaryFailed = r.attempts[0] && r.attempts[0].provider === primaryName() && !r.attempts[0].ok;
+      if (r.fallback) st.inc('provider_fallbacks');
+      if (primaryFailed) { st.inc('primary_failures'); if (++breaker.fails >= BREAKER_FAILS) { breaker.openUntil = Date.now() + BREAKER_MS; st.inc('breaker_opened'); breaker.fails = 0; } }
+      else if (r.provider === primaryName()) breaker.fails = 0;
+      const c = judgment.combine(s.det, r);
+      if (c.raised) st.inc('raised_risk');
+      if (r.injection) st.inc('injections_flagged');
+      st.inc((r.score >= 0.4) === (s.det >= 0.4) ? 'agree' : 'disagree');
+      ctx.bus.publish('risk.scored', id, {
+        source: 'judgment', provider: r.provider, fallback: r.fallback, score: r.score, answers: r.answers,
+        injection: r.injection, deterministic: s.det, final: c.final, flags: c.flags,
+      }, traceId);
+    })
+    .catch((err) => {
+      // Every provider failed. Never fail open: deterministic score stands, wallet limits unchanged.
+      if (err.timeout) st.inc('timeouts');
+      st.inc('fallbacks'); // = fell back to the deterministic score alone
+      if (err.attempts && err.attempts[0] && err.attempts[0].provider === primaryName()) {
+        st.inc('primary_failures');
+        if (++breaker.fails >= BREAKER_FAILS) { breaker.openUntil = Date.now() + BREAKER_MS; st.inc('breaker_opened'); breaker.fails = 0; }
+      }
+      st.error(err);
+    })
+    .finally(() => {
+      s.busy = false; inflight--;
+      if (s.pending) runJudgment(id, s, traceId, ctx, st); // justification arrived mid-call
+    });
 }
 
 const llmBehaviourScorer = defineModule({
@@ -138,54 +196,34 @@ const llmBehaviourScorer = defineModule({
     if (judgeState.size > 2000) judgeState.delete(judgeState.keys().next().value);
 
     let trigger = false;
+    let urgent = false; // new justification text must always be judged: it bypasses the throttle
     if (e.type === 'signals.extracted') s.signals = e.payload.signals;
     else if (e.type === 'session.updated') s.window_requests = e.payload.window_requests;
     else if (e.type === 'wallet.checked') {
       if (e.payload.amount != null) s.checkout = { amount: e.payload.amount, item: e.payload.item };
-      if (e.payload.justification) { s.justification = e.payload.justification; trigger = true; }
+      if (e.payload.justification) { s.justification = e.payload.justification; trigger = urgent = true; }
     } else if (e.type === 'risk.scored') {
       if (e.payload.source === 'judgment') return;
       s.det = e.payload.deterministic ?? e.payload.score; // deterministic only, so agreement stays meaningful
       s.reasons = e.payload.det_reasons || e.payload.reasons || [];
       trigger = s.window_requests >= 3 || s.det >= 0.3;
     }
-    if (!trigger || s.busy || inflight >= judgeDeps.maxInflight || Date.now() - s.last < judgeDeps.minGapMs) return;
-    if (!ctx.bus) return;
-
-    s.busy = true; s.last = Date.now(); inflight++;
-    const provider = judgeDeps.provider || process.env.JUDGE_PROVIDER || 'classifier';
-    const key = judgeDeps.key || process.env.CLASSIFIER_KEY || undefined;
-    const t0 = Date.now();
-    st.inc('calls');
-    judgment.judge(judgeFacts(s), { provider, key, fetchImpl: judgeDeps.fetchImpl, timeoutMs: judgeDeps.timeoutMs })
-      .then((r) => {
-        judgeLatency.push(Date.now() - t0); if (judgeLatency.length > 200) judgeLatency.shift();
-        const c = judgment.combine(s.det, r);
-        if (c.raised) st.inc('raised_risk');
-        if (r.injection) st.inc('injections_flagged');
-        st.inc((r.score >= 0.4) === (s.det >= 0.4) ? 'agree' : 'disagree');
-        ctx.bus.publish('risk.scored', id, {
-          source: 'judgment', provider: r.provider, score: r.score, answers: r.answers,
-          injection: r.injection, deterministic: s.det, final: c.final, flags: c.flags,
-        }, e.trace_id);
-      })
-      .catch((err) => {
-        // Never fail open: deterministic score stands, wallet limits unchanged.
-        if (err.timeout) st.inc('timeouts');
-        st.inc('fallbacks');
-        st.error(err);
-      })
-      .finally(() => { s.busy = false; inflight--; });
+    if (!trigger || !ctx.bus) return;
+    if (s.busy) { if (urgent) s.pending = true; return; } // rerun with the newest facts once the call returns
+    if (!urgent && (inflight >= judgeDeps.maxInflight || Date.now() - s.last < judgeDeps.minGapMs)) return;
+    runJudgment(id, s, e.trace_id, ctx, st);
   },
   custom: () => {
     const c = llmBehaviourScorer.rawCounters();
     const paired = (c.agree || 0) + (c.disagree || 0);
     return {
-      provider: judgeDeps.provider || process.env.JUDGE_PROVIDER || 'classifier',
-      keyed: !!(judgeDeps.key || process.env.CLASSIFIER_KEY),
+      primary: primaryName(),
+      fallback: fallbackName(),
+      keyed: !!(judgeDeps.key || judgeKey(primaryName())),
+      breaker_open: Date.now() < breaker.openUntil,
       call_latency_ms: { p50: pctl(judgeLatency, 0.5), p95: pctl(judgeLatency, 0.95) },
       agreement_rate: paired ? +((c.agree || 0) / paired).toFixed(3) : null,
-      budget_ms: judgeDeps.timeoutMs,
+      budget_ms: judgeDeps.timeoutMs || judgment.budgetFor(primaryName()),
     };
   },
 });
@@ -309,5 +347,16 @@ const all = [
   [dashboardBridge, 'extend'],
 ];
 
-module.exports = { all, ingress, dashboardBridge, riskRouter, judgeDeps, llmBehaviourScorer };
+/** One throwaway call at boot so the first real session doesn't pay the ~1.3s cold-start (synthetic data only). */
+function warmupJudge() {
+  const facts = { path_sequence: ['search'], sequence_shape: 'browsing', window_requests: 1, reasons: [], justification: 'warmup' };
+  const names = [primaryName(), fallbackName()].filter(Boolean);
+  return Promise.all(names.map((provider) => {
+    const key = judgeDeps.key || judgeKey(provider);
+    if (provider !== 'classifier' && !key) return null;
+    return judgment.judge(facts, { provider, key, fetchImpl: judgeDeps.fetchImpl, timeoutMs: 5000 }).catch(() => {});
+  }));
+}
+
+module.exports = { all, ingress, dashboardBridge, riskRouter, judgeDeps, llmBehaviourScorer, warmupJudge, breaker };
 // NOTE: `all` is [module, state] pairs consumed by registry.register().
