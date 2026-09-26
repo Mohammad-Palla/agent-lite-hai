@@ -18,6 +18,7 @@
 const log = require('./audit-log');
 const sessions = require('./session-store');
 const approval = require('./approval-engine');
+const { fmt } = require('./currency');
 
 const AUTO_DENY_MULTIPLIER = 3; // amounts > 3x tx limit are auto-denied
 
@@ -42,7 +43,7 @@ function attemptCheckout(sessionId, amount, item, injectedReason) {
   // Auto-deny impossible amounts (>3x tx limit) — policy documented
   if (amount > session.walletTxLimit * AUTO_DENY_MULTIPLIER) {
     log.append('WALLET_AUTO_DENIED', sessionId,
-      `[WALLET AUTO-DENY] $${amount} exceeds ${AUTO_DENY_MULTIPLIER}x tx-limit ($${session.walletTxLimit * AUTO_DENY_MULTIPLIER}) — auto-denied`,
+      `[WALLET AUTO-DENY] ${fmt(amount)} exceeds ${AUTO_DENY_MULTIPLIER}x tx-limit (${fmt(session.walletTxLimit * AUTO_DENY_MULTIPLIER)}) — auto-denied`,
       { amount, txLimit: session.walletTxLimit, item }
     );
     return { allowed: false, denied: true, reason: `amount_${amount}_exceeds_auto_deny_threshold` };
@@ -54,7 +55,7 @@ function attemptCheckout(sessionId, amount, item, injectedReason) {
 
   // Needs approval?
   if (overTxLimit || overDailyLimit || risky) {
-    const reason = overTxLimit ? `over-tx-limit($${amount}>$${session.walletTxLimit})`
+    const reason = overTxLimit ? `over-tx-limit(${fmt(amount)}>${fmt(session.walletTxLimit)})`
       : overDailyLimit ? `over-daily-limit`
       : `session-routed-${session.route}`;
 
@@ -66,7 +67,7 @@ function attemptCheckout(sessionId, amount, item, injectedReason) {
     );
 
     log.append('WALLET_APPROVAL_REQUIRED', sessionId,
-      `[WALLET] approval required: $${amount} for "${item}" reason=${reason} hash=${hash}`,
+      `[WALLET] approval required: ${fmt(amount)} for "${item}" reason=${reason} hash=${hash}`,
       { amount, item, reason, hash }
     );
 
@@ -98,7 +99,7 @@ function executeCheckout(sessionId, amount, item) {
   const orderId = `ORD-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
 
   log.append('CHECKOUT_EXECUTED', sessionId,
-    `[CHECKOUT] $${amount} for "${item}" orderId=${orderId} — wallet balance: $${session.walletDailyLimit - session.walletDailyUsed} remaining`,
+    `[CHECKOUT] ${fmt(amount)} for "${item}" orderId=${orderId} — wallet balance: ${fmt(session.walletDailyLimit - session.walletDailyUsed)} remaining`,
     { amount, item, orderId, walletRemaining: session.walletDailyLimit - session.walletDailyUsed }
   );
 

@@ -19,6 +19,7 @@ console.log('══════════════════════�
 const services = [
   { name: 'STOREFRONT', file: path.join(root, 'storefront', 'server.js') },
   { name: 'GATEWAY',    file: path.join(root, 'gateway', 'server.js') },
+  { name: 'TOOL-SERVER', file: path.join(root, 'agents', 'tool-server.js') },
   { name: 'UI',         file: path.join(root, 'ui', 'server.js') },
 ];
 
@@ -36,6 +37,7 @@ console.log('  ▶ Gateway Proxy:          http://localhost:3001');
 console.log('  ▶ Admin API & WebSockets: http://localhost:3002');
 console.log('  ▶ Storefront Real:        http://localhost:3003');
 console.log('  ▶ Storefront Sandbox:     http://localhost:3004');
+console.log('  ▶ MCP Tool Server:        http://localhost:3007/mcp');
 console.log('\nPress Ctrl+C to shut down all processes.\n');
 
 function shutdown() {

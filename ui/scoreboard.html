@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Quarantine — The Scoreboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --c-bg: #08080c; --c-surface: #101018; --c-border: #242436; --c-green: #00ff66; --c-amber: #ffb000; --c-red: #ff2a4b;
+      --c-cyan: #00e5ff; --c-purple: #bb66ff; --c-white: #e2e8f0; --c-dim: #64748b;
+      --font-pixel: 'Press Start 2P', monospace; --font-body: 'VT323', 'Courier New', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: var(--c-bg); color: var(--c-white); font-family: var(--font-body); font-size: 19px; line-height: 1.3; }
+    body { padding: 12px; min-height: 100vh; }
+    body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+      background: repeating-linear-gradient(0deg, rgba(0,0,0,0.13) 0 1px, transparent 1px 3px); }
+    a { color: var(--c-cyan); text-decoration: none; }
+    a:hover, a:focus-visible { text-decoration: underline; outline: none; }
+
+    header { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 14px; border: 2px solid var(--c-green);
+      background: var(--c-surface); margin-bottom: 12px; }
+    h1 { font-family: var(--font-pixel); font-size: 15px; color: var(--c-green); letter-spacing: 1px; }
+    .tag { color: var(--c-dim); font-size: 17px; }
+    .spacer { flex: 1; }
+    .seg { display: inline-flex; border: 1px solid var(--c-border); }
+    .seg button { font: inherit; font-size: 17px; color: var(--c-dim); background: transparent; border: 0; padding: 4px 12px; cursor: pointer; }
+    .seg button[aria-pressed="true"] { background: var(--c-green); color: #001a0a; }
+    .seg button:focus-visible { outline: 2px solid var(--c-cyan); outline-offset: -2px; }
+    .live { display: inline-flex; align-items: center; gap: 6px; font-size: 17px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c-dim); }
+    .dot.on { background: var(--c-green); box-shadow: 0 0 8px var(--c-green); }
+    .dot.err { background: var(--c-red); box-shadow: 0 0 8px var(--c-red); }
+
+    .banner { display: none; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--c-amber); color: var(--c-amber); background: rgba(255,176,0,.07); }
+    .banner.show { display: block; }
+
+    .grid { display: grid; gap: 12px; }
+    .tiles { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 12px; }
+    .tile { border: 1px solid var(--c-border); background: var(--c-surface); padding: 10px 12px; }
+    .tile .k { font-family: var(--font-pixel); font-size: 8px; color: var(--c-dim); letter-spacing: 1px; text-transform: uppercase; }
+    .tile .v { font-family: var(--font-pixel); font-size: 24px; margin: 8px 0 4px; }
+    .tile .s { color: var(--c-dim); font-size: 16px; }
+    .green { color: var(--c-green); } .amber { color: var(--c-amber); } .red { color: var(--c-red); } .cyan { color: var(--c-cyan); } .purple { color: var(--c-purple); }
+
+    .cols { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); margin-bottom: 12px; }
+    .panel { border: 1px solid var(--c-border); background: var(--c-surface); padding: 10px 12px; min-width: 0; }
+    .panel h2 { font-family: var(--font-pixel); font-size: 9px; letter-spacing: 1px; color: var(--c-cyan); margin-bottom: 4px; text-transform: uppercase; }
+    .panel .sub { color: var(--c-dim); font-size: 16px; margin-bottom: 10px; }
+
+    .bars { display: grid; gap: 7px; }
+    .bar { display: grid; grid-template-columns: 170px 1fr 84px; gap: 8px; align-items: center; font-size: 18px; }
+    .bar .track { height: 14px; background: rgba(255,255,255,.06); position: relative; }
+    .bar .fill { height: 100%; min-width: 2px; transition: width .5s; }
+    .bar .n { text-align: right; }
+    @media (max-width: 620px) { .bar { grid-template-columns: 110px 1fr 60px; } }
+
+    table { width: 100%; border-collapse: collapse; font-size: 17px; }
+    th { font-family: var(--font-pixel); font-size: 7px; letter-spacing: 1px; color: var(--c-dim); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--c-border); text-transform: uppercase; }
+    td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.05); white-space: nowrap; }
+    td.r, th.r { text-align: right; }
+    .scroll { overflow-x: auto; }
+    .pill { display: inline-block; font-family: var(--font-pixel); font-size: 7px; padding: 3px 6px; border: 1px solid currentColor; letter-spacing: 1px; }
+
+    .money { display: grid; grid-template-columns: 1fr auto; gap: 5px 14px; font-size: 18px; }
+    .money .n { text-align: right; }
+    .money hr { grid-column: 1 / -1; border: 0; border-top: 1px dashed var(--c-border); margin: 3px 0; }
+
+    #timeline svg { width: 100%; height: 170px; display: block; }
+    .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 16px; color: var(--c-dim); margin-top: 6px; }
+    .legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; }
+    .empty { color: var(--c-dim); padding: 14px 0; }
+    footer { color: var(--c-dim); font-size: 16px; margin-top: 12px; }
+    @media (prefers-reduced-motion: reduce) { .bar .fill { transition: none; } }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>THE SCOREBOARD</h1>
+  <span class="tag">How many were caught, and every decision the precinct made</span>
+  <span class="spacer"></span>
+  <div class="seg" role="group" aria-label="Time range">
+    <button id="rLive" aria-pressed="true" title="Everything since the gateway last started">THIS RUN</button>
+    <button id="rAll" aria-pressed="false" title="Every run ever saved to the Neon database">ALL TIME</button>
+  </div>
+  <span class="live"><span class="dot" id="dot"></span><span id="status">CONNECTING</span></span>
+  <a href="/">← THE PRECINCT</a>
+</header>
+
+<div class="banner" id="banner" role="status"></div>
+
+<section class="grid tiles" aria-label="Headline numbers">
+  <div class="tile"><div class="k">Visitors</div><div class="v cyan" id="tVisitors">0</div><div class="s" id="tVisitorsS">different callers so far</div></div>
+  <div class="tile"><div class="k">Caught</div><div class="v red" id="tCaught">0</div><div class="s" id="tCaughtS">held, arrested or blocked</div></div>
+  <div class="tile"><div class="k">Cleared</div><div class="v green" id="tCleared">0</div><div class="s">shopped normally</div></div>
+  <div class="tile"><div class="k">Arrests signed</div><div class="v amber" id="tArrests">0</div><div class="s" id="tArrestsS">by the Judge, doors slammed</div></div>
+  <div class="tile"><div class="k">Sweet talk ignored</div><div class="v purple" id="tSweet">0</div><div class="s">forged notes and pressure</div></div>
+  <div class="tile"><div class="k">Money kept safe</div><div class="v green" id="tSafe">₹0</div><div class="s" id="tSafeS">refused or cancelled</div></div>
+</section>
+
+<section class="grid cols">
+  <div class="panel">
+    <h2>Every decision</h2>
+    <div class="sub">Where each visitor ended up. A visitor counts by the worst thing that happened to them.</div>
+    <div class="bars" id="verdicts"></div>
+  </div>
+  <div class="panel">
+    <h2>Money</h2>
+    <div class="sub">What the Cashier did with payments (Indian rupees).</div>
+    <div class="money" id="money"></div>
+  </div>
+</section>
+
+<section class="grid cols">
+  <div class="panel" id="timeline" style="grid-column: 1 / -1">
+    <h2>What happened when</h2>
+    <div class="sub" id="timelineSub">Payments and catches over time.</div>
+    <div id="chart"></div>
+    <div class="legend">
+      <span><i style="background:var(--c-green)"></i>sale went through</span>
+      <span><i style="background:var(--c-amber)"></i>payment held for the Judge</span>
+      <span><i style="background:var(--c-red)"></i>payment refused outright</span>
+      <span><i style="background:var(--c-purple)"></i>suspect caught (held or arrest proposed)</span>
+    </div>
+  </div>
+</section>
+
+<section class="grid cols">
+  <div class="panel">
+    <h2>The Judge</h2>
+    <div class="sub">Human decisions on things that cannot be undone.</div>
+    <div class="money" id="judge"></div>
+  </div>
+  <div class="panel">
+    <h2>Who is who</h2>
+    <div class="sub">Trust tiers from the ID check, and the second opinion.</div>
+    <div class="bars" id="tiers"></div>
+    <div class="money" id="second" style="margin-top:10px"></div>
+  </div>
+</section>
+
+<section class="grid cols">
+  <div class="panel" style="grid-column: 1 / -1">
+    <h2>By character</h2>
+    <div class="sub">How each kind of visitor was treated.</div>
+    <div class="scroll"><table id="byWho"><thead><tr><th>Who</th><th class="r">Visitors</th><th class="r">Caught</th><th class="r">Cleared</th><th class="r">Spent</th><th class="r">Refused</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Latest cases</h2>
+  <div class="sub">The most recent visitors and what happened to them.</div>
+  <div class="scroll"><table id="recent"><thead><tr><th>Visitor</th><th>Who</th><th>Verdict</th><th class="r">Threat</th><th class="r">Requests</th><th class="r">Bought</th><th class="r">Held</th><th class="r">Refused</th><th>Last seen</th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<footer id="foot">Numbers come from the Case Book (the audit log). "This run" resets when the gateway restarts; "All time" reads every run saved to Neon.</footer>
+
+<script>
+const ADMIN_API = 'http://localhost:3002';
+const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const int = (n) => Number(n || 0).toLocaleString('en-IN');
+const $ = (id) => document.getElementById(id);
+
+const VERDICT = {
+  ALLOW:          { label: 'CLEARED',              color: 'var(--c-green)', note: 'shopped normally' },
+  QUARANTINE:     { label: 'HELD FOR QUESTIONING', color: 'var(--c-amber)', note: 'moved to the fake shop' },
+  BLOCK_PROPOSED: { label: 'ARREST PROPOSED',      color: 'var(--c-red)',   note: 'waiting for the Judge' },
+  BLOCKED:        { label: 'DOOR SLAMMED',         color: 'var(--c-red)',   note: 'the Judge signed the arrest' },
+};
+const TIERS = [[1, 'BADGE-HOLDER', 'var(--c-purple)'], [2, 'ID CHECKS OUT', 'var(--c-green)'], [3, 'SAYS IT IS A ROBOT', 'var(--c-cyan)'],
+               [4, 'ACTS LIKE A ROBOT', 'var(--c-amber)'], [5, 'FAKE / SCRIPT', 'var(--c-red)']];
+
+let range = 'live';
+let timer = null;
+
+function setRange(r) {
+  range = r;
+  $('rLive').setAttribute('aria-pressed', r === 'live');
+  $('rAll').setAttribute('aria-pressed', r === 'all');
+  refresh();
+}
+$('rLive').addEventListener('click', () => setRange('live'));
+$('rAll').addEventListener('click', () => setRange('all'));
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function bars(el, rows, total) {
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  el.innerHTML = rows.map((r) => `
+    <div class="bar" title="${esc(r.note || '')}">
+      <span>${esc(r.label)}</span>
+      <span class="track"><span class="fill" style="display:block;width:${(r.n / max) * 100}%;background:${r.color}"></span></span>
+      <span class="n">${int(r.n)}${total ? ` <span style="color:var(--c-dim)">${Math.round((r.n / total) * 100)}%</span>` : ''}</span>
+    </div>`).join('');
+}
+
+function kv(el, rows) {
+  el.innerHTML = rows.map((r) => r === '-' ? '<hr>' : `<span>${r[0]}</span><span class="n ${r[2] || ''}">${r[1]}</span>`).join('');
+}
+
+function render(d) {
+  const h = d.headline;
+  $('tVisitors').textContent = int(h.visitors);
+  $('tCaught').textContent = int(h.caught);
+  $('tCaughtS').textContent = `${h.caughtPercent}% of visitors: held, arrested or blocked`;
+  $('tCleared').textContent = int(h.cleared);
+  $('tArrests').textContent = int(h.arrestsSigned);
+  $('tSweet').textContent = int(h.sweetTalkIgnored);
+  $('tSafe').textContent = inr(h.moneyKeptSafe);
+  $('tSafeS').textContent = `${inr(h.moneyExecuted)} of real sales went through`;
+
+  bars($('verdicts'), Object.keys(VERDICT).map((k) => ({ label: VERDICT[k].label, n: d.verdicts[k] || 0, color: VERDICT[k].color, note: VERDICT[k].note })), h.visitors);
+
+  const m = d.money;
+  kv($('money'), [
+    ['Sales that went through', `${int(m.executed.count)} · ${inr(m.executed.amount)}`, 'green'],
+    ['Held for the Judge', `${int(m.heldForJudge.count)} · ${inr(m.heldForJudge.amount)}`, 'amber'],
+    ['Refused outright (over 3× the limit)', `${int(m.refusedOutright.count)} · ${inr(m.refusedOutright.amount)}`, 'red'],
+    '-',
+    ['Judge approved', `${int(m.judgeApproved.count)} · ${inr(m.judgeApproved.amount)}`, 'green'],
+    ['Judge refused', `${int(m.judgeRefused.count)} · ${inr(m.judgeRefused.amount)}`, 'red'],
+    ['Closed automatically after an arrest', `${int(m.closedByPolicy.count)} · ${inr(m.closedByPolicy.amount)}`, 'amber'],
+    '-',
+    ['Total kept safe', inr(m.keptSafe), 'green'],
+  ]);
+
+  const j = d.judge;
+  kv($('judge'), [
+    ['Decisions asked of the Judge', int(j.pending)],
+    ['Signed (approved)', int(j.approved), 'green'],
+    ['Refused (denied)', int(j.refused), 'red'],
+    ['Closed by policy after an arrest', int(j.closedByPolicy), 'amber'],
+    ['Cancelled: the situation changed', int(j.cancelledStale), 'amber'],
+    ['Second clicks ignored', int(j.secondClicksIgnored), 'purple'],
+    ['Average time to decide', j.avgDecisionSeconds == null ? 'no decisions yet' : `${j.avgDecisionSeconds} s`, 'cyan'],
+  ]);
+
+  bars($('tiers'), TIERS.map(([n, label, color]) => ({ label: `T${n} ${label}`, n: d.tiers[n] || 0, color })));
+  const s = d.secondOpinion;
+  const served = Object.entries(s.servedBy || {}).map(([k, v]) => `${k} ${int(v)}`).join(' · ') || 'none yet';
+  kv($('second'), [
+    ['Second-opinion calls', int(s.calls)],
+    ['Answered by', served, 'cyan'],
+    ['Raised the threat level', int(s.raisedRisk), 'amber'],
+    ['Injections flagged', int(s.injectionsFlagged), 'purple'],
+    ['Fell back to the rulebook alone', int(s.fallbacks), s.fallbacks ? 'amber' : ''],
+  ]);
+
+  const tb = $('byWho').querySelector('tbody');
+  tb.innerHTML = d.byWho.length ? d.byWho.map((w) => `<tr><td>${esc(w.who)}</td><td class="r">${int(w.visitors)}</td><td class="r red">${int(w.caught)}</td><td class="r green">${int(w.cleared)}</td><td class="r">${inr(w.spent)}</td><td class="r">${inr(w.refused)}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No visitors yet. Send in a customer from the dashboard.</td></tr>';
+
+  const rb = $('recent').querySelector('tbody');
+  rb.innerHTML = d.recent.length ? d.recent.map((r) => {
+    const v = VERDICT[r.verdict] || VERDICT.ALLOW;
+    const t = r.last ? new Date(r.last).toLocaleTimeString() : '';
+    return `<tr><td>${esc(r.id.length > 26 ? r.id.slice(0, 26) + '…' : r.id)}</td><td>${esc(r.who)}</td><td><span class="pill" style="color:${v.color}">${v.label}</span></td><td class="r">${r.threat}%</td><td class="r">${int(r.requests)}</td><td class="r">${r.executed ? `${r.executed} · ${inr(r.executedAmount)}` : '–'}</td><td class="r">${r.held ? `${r.held} · ${inr(r.heldAmount)}` : '–'}</td><td class="r">${r.refused ? `${r.refused} · ${inr(r.refusedAmount)}` : '–'}</td><td>${t}</td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="empty">Nothing yet.</td></tr>';
+
+  chart(d.timeline);
+  $('foot').textContent = `${d.range === 'all' ? 'All time, from Neon' : 'This run, from memory'} · ${int(d.events.total)} log entries${d.span.from ? ` · ${new Date(d.span.from).toLocaleString()} to ${new Date(d.span.to).toLocaleString()}` : ''} · updated ${new Date(d.generatedAt).toLocaleTimeString()}. "This run" resets when the gateway restarts.`;
+}
+
+const SERIES = [['cleared', 'var(--c-green)'], ['held', 'var(--c-amber)'], ['refused', 'var(--c-red)'], ['caught', 'var(--c-purple)']];
+function chart(tl) {
+  const el = $('chart');
+  const b = tl.buckets || [];
+  if (!b.length) { el.innerHTML = '<div class="empty">Nothing to draw yet.</div>'; $('timelineSub').textContent = 'Payments and catches over time.'; return; }
+  const w = tl.bucketMs;
+  $('timelineSub').textContent = `Each bar is ${w >= 60000 ? Math.round(w / 60000) + ' min' : Math.round(w / 1000) + ' s'}.`;
+  const W = 900, H = 170, padL = 30, padB = 22, padT = 8;
+  const totals = b.map((x) => SERIES.reduce((a, [k]) => a + x[k], 0));
+  const max = Math.max(1, ...totals);
+  const bw = Math.max(3, (W - padL) / b.length - 2);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Events over time, stacked by kind">`;
+  for (const f of [0, .5, 1]) {
+    const y = padT + (1 - f) * (H - padB - padT);
+    svg += `<line x1="${padL}" x2="${W}" y1="${y}" y2="${y}" stroke="#242436" stroke-dasharray="3 4"/><text x="0" y="${y + 4}" fill="#64748b" font-size="12" font-family="VT323, monospace">${Math.round(max * f)}</text>`;
+  }
+  b.forEach((x, i) => {
+    let y = H - padB;
+    const cx = padL + i * ((W - padL) / b.length) + 1;
+    for (const [k, color] of SERIES) {
+      const h = (x[k] / max) * (H - padB - padT);
+      if (h > 0) { y -= h; svg += `<rect x="${cx}" y="${y}" width="${bw}" height="${h}" fill="${color.replace('var(--c-green)', '#00ff66').replace('var(--c-amber)', '#ffb000').replace('var(--c-red)', '#ff2a4b').replace('var(--c-purple)', '#bb66ff')}"><title>${new Date(x.t).toLocaleTimeString()}: ${k} ${x[k]}</title></rect>`; }
+    }
+    if (i === 0 || i === b.length - 1 || i === Math.floor(b.length / 2)) {
+      const anchor = i === 0 ? 'start' : (i === b.length - 1 ? 'end' : 'middle');
+      svg += `<text x="${anchor === 'end' ? cx + bw : cx}" y="${H - 6}" fill="#64748b" font-size="12" text-anchor="${anchor}" font-family="VT323, monospace">${new Date(x.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</text>`;
+    }
+  });
+  el.innerHTML = svg + '</svg>';
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(`${ADMIN_API}/analytics?range=${range}`);
+    const d = await res.json();
+    if (!res.ok) {
+      $('dot').className = 'dot err'; $('status').textContent = 'PROBLEM';
+      $('banner').textContent = d.hint || d.detail || 'The gateway could not build the numbers.';
+      $('banner').classList.add('show');
+      return;
+    }
+    $('banner').classList.remove('show');
+    $('dot').className = 'dot on'; $('status').textContent = 'LIVE';
+    render(d);
+  } catch (e) {
+    $('dot').className = 'dot err'; $('status').textContent = 'OFFLINE';
+    $('banner').textContent = 'Cannot reach the gateway on :3002. Is it running?';
+    $('banner').classList.add('show');
+  }
+}
+
+refresh();
+timer = setInterval(refresh, 3000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,404 @@
+'use strict';
+/** Unit tests: no network, no ports. Run with `npm test`. */
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('crypto');
+
+const { createStats, defineModule, makeEvent, validateModule, EVENT_TYPES } = require('../gateway/contract');
+const { Bus } = require('../gateway/bus');
+const signature = require('../gateway/signature');
+const identity = require('../gateway/identity');
+const signals = require('../gateway/signals');
+const judgment = require('../gateway/judgment');
+const router = require('../gateway/router');
+const { scoreSession, routeFromScore } = require('../gateway/risk-scorer');
+const { loadEnv } = require('../gateway/env');
+
+const ev = (type, id, payload, ts = Date.now()) => ({ type, session_id: id, payload, ts });
+
+test('contract: envelope, event types and stats', () => {
+  const e = makeEvent('risk.scored', 's1', { score: 0.5 });
+  assert.equal(e.session_id, 's1');
+  assert.ok(e.trace_id && e.ts);
+  assert.throws(() => makeEvent('nope', 's1'), /unknown event type/);
+  assert.equal(EVENT_TYPES.length, 11);
+
+  const st = createStats();
+  st.inc('a'); st.inc('a', 2); st.latency(1); st.latency(9);
+  const snap = st.snapshot();
+  assert.equal(snap.counters.a, 3);
+  assert.ok(snap.latency.p50 !== null);
+});
+
+test('contract: module isolates failures, honours the fault switch, and can be replayed alone', () => {
+  const m = defineModule({ name: 'x', subscribes: ['risk.scored'], onEvent(e, st) { if (e.payload.boom) throw new Error('bad'); st.inc('ok'); } });
+  validateModule(m);
+  m.handle(ev('risk.scored', 's', {}));
+  m.handle(ev('risk.scored', 's', { boom: true })); // must not throw
+  assert.equal(m.stats().counters.ok, 1);
+  assert.equal(m.stats().counters.errors, 1);
+  assert.equal(m.health(), 'degraded');
+  m.setFault(true);
+  m.handle(ev('risk.scored', 's', {}));
+  assert.equal(m.health(), 'down');
+  assert.equal(m.stats().counters.dropped_faulted, 1);
+  assert.throws(() => validateModule({ name: 'bad' }), /missing/);
+});
+
+test('bus: publishes to typed and wildcard subscribers, keeps history', () => {
+  const bus = new Bus();
+  const seen = [];
+  bus.subscribe('*', (e) => seen.push(e.type));
+  bus.publish('ingress.accepted', 'a', {});
+  bus.publish('risk.scored', 'b', {});
+  assert.deepEqual(seen, ['ingress.accepted', 'risk.scored']);
+  assert.equal(bus.history({ sessionId: 'b' }).length, 1);
+});
+
+test('signature: accepts valid, rejects replay, wrong key, stale, malformed', () => {
+  process.env.AGENT_SIGNING_KEY = 'k';
+  const sign = (sid, t, key = 'k') => `t=${t},s=${crypto.createHmac('sha256', key).update(`${sid}:pk:${t}`).digest('hex')}`;
+  const h = (v) => ({ 'x-agent-signature': v, 'x-agent-pubkey-id': 'pk' });
+  const now = Date.now();
+  assert.equal(signature.verify({}, 's1'), null);
+  assert.equal(signature.verify(h(sign('s1', now)), 's1').valid, true);
+  assert.equal(signature.verify(h(sign('s1', now)), 's2').reason, 'hmac_mismatch');           // replay on another session
+  assert.equal(signature.verify(h(sign('s1', now, 'other')), 's1').reason, 'hmac_mismatch');   // wrong key
+  assert.equal(signature.verify(h(sign('s1', now - 120000)), 's1').reason, 'timestamp_expired_or_drift');
+  assert.equal(signature.verify(h('garbage'), 's1').reason, 'malformed_signature_format');
+  delete process.env.AGENT_SIGNING_KEY;
+});
+
+test('signals: UA class, timing regularity, journey shape, beacon', () => {
+  assert.equal(signals.classifyUA(null), 'missing');
+  assert.equal(signals.classifyUA('curl/8.0'), 'http_library');
+  assert.equal(signals.classifyUA('Mozilla/5.0 (X11) Chrome/120 Safari/537'), 'browser_like');
+  assert.equal(signals.classifyUA('Mozilla/5.0 (compatible; GPTBot/1.0)'), 'declared_bot');
+  assert.equal(signals.timingStats([0, 100, 200, 300]).cv, 0);          // perfectly regular
+  assert.equal(signals.timingStats([0, 100]).cv, null);                   // not enough samples
+  assert.equal(signals.sequenceShape(['search', 'product', 'checkout']), 'full_journey');
+  assert.equal(signals.sequenceShape(['checkout', 'checkout']), 'direct_checkout');
+  signals.recordBeacon('beacon-1');
+  assert.equal(signals.extract('beacon-1', { headers: {}, method: 'GET', url: '/search' }).signals.beacon, true);
+});
+
+test('identity: tier logic', () => {
+  const base = { ua: null, ua_class: 'missing', accept_language: null, sec_fetch: null, referrer: null, beacon: false, timing: { cv: 0.1 }, sequence_shape: 'direct_checkout', declared_agent: null };
+  const tier = (o) => identity.classifySignals({ ...base, ...o });
+  const human = { ua_class: 'browser_like', accept_language: 'en', sec_fetch: 'navigate', referrer: 'x', beacon: true, timing: { cv: 0.8 }, sequence_shape: 'full_journey' };
+  assert.equal(tier(human).tier, null);
+  assert.equal(tier({ ...human, ua: 'GPTBot/1.0', ua_class: 'declared_bot' }).tier, 3);
+  assert.equal(tier({ ...human, declared_agent: 'x' }).tier, 3);
+  assert.equal(tier({ ua_class: 'http_library' }).tier, 5);
+  assert.equal(tier({ ...human, beacon: false, referrer: null, timing: { cv: 0.05 } }).tier, 4);
+  assert.deepEqual(
+    (({ tier: t, verified }) => ({ t, verified }))(tier({ signature: { valid: true, pubkeyId: 'k' }, signature_present: true })),
+    { t: 1, verified: true });
+  assert.equal(tier({ signature: { valid: false, reason: 'hmac_mismatch' }, signature_present: true }).label, 'spoofed_signature');
+});
+
+test('identity: reverse DNS needs a matching operator suffix AND forward confirmation', async () => {
+  const bot = identity.knownBot('GPTBot/1.0');
+  assert.equal(identity.isPublicIp('127.0.0.1'), false);
+  assert.equal(identity.isPublicIp('10.1.2.3'), false);
+  assert.equal(identity.isPublicIp('20.1.2.3'), true);
+  assert.equal((await identity.verifyReverseDns('127.0.0.1', bot, {})).reason, 'non_public_ip');
+  const good = { reverse: async () => ['crawl.openai.com'], lookup: async () => [{ address: '20.1.2.3' }] };
+  assert.equal((await identity.verifyReverseDns('20.1.2.3', bot, good)).verified, true);
+  assert.equal((await identity.verifyReverseDns('20.9.9.9', bot, good)).reason, 'forward_mismatch');
+  const spoof = { reverse: async () => ['evil.example.com'], lookup: async () => [] };
+  assert.equal((await identity.verifyReverseDns('8.8.4.4', bot, spoof)).reason, 'suffix_mismatch');
+});
+
+test('risk scorer: thresholds and burst / no-search signals', () => {
+  assert.equal(routeFromScore(0.39), 'ALLOW');
+  assert.equal(routeFromScore(0.4), 'QUARANTINE');
+  assert.equal(routeFromScore(0.7), 'BLOCK_PROPOSED');
+  const calm = { requestLog: [{ path: '/search' }, { path: '/product/1' }], searchCount: 1, compareCount: 1, checkoutAttempts: 0, concurrentCheckouts: 0, walletTxLimit: 5000, _lastCheckoutAmount: 0 };
+  assert.ok(scoreSession(calm).score < 0.4);
+  const scalp = { requestLog: Array.from({ length: 9 }, () => ({ path: '/checkout' })), searchCount: 0, compareCount: 0, checkoutAttempts: 5, concurrentCheckouts: 3, walletTxLimit: 5000, _lastCheckoutAmount: 11000 };
+  assert.ok(scoreSession(scalp).score >= 0.7);
+});
+
+test('router: raise-only combination, injection floor, staleness, tier-1 trust', () => {
+  router.reset();
+  assert.equal(router.decide('a', 0.05).score, 0.05);
+
+  router.observe(ev('identity.classified', 'b', { tier: 5, label: 'automation_tells' }));
+  assert.ok(Math.abs(router.decide('b', 0.05).score - 0.15) < 1e-9);          // nudge, not a floor
+
+  router.observe(ev('risk.scored', 'c', { source: 'judgment', score: 0.8, injection: false }));
+  assert.equal(router.decide('c', 0.1).route, 'BLOCK_PROPOSED');
+  router.observe(ev('risk.scored', 'd', { source: 'judgment', score: 0.05, injection: false }));
+  assert.equal(router.decide('d', 0.6).score, 0.6);                             // judgment never lowers
+
+  router.observe(ev('risk.scored', 'e', { source: 'judgment', score: 0.1, injection: true }));
+  const inj = router.decide('e', 0);
+  assert.equal(inj.score, 0.5);
+  assert.ok(inj.reasons.includes('injection_flagged'));
+
+  router.observe(ev('risk.scored', 'f', { source: 'judgment', score: 0.9, injection: false }, Date.now() - 60000));
+  assert.equal(router.decide('f', 0.1).score, 0.1);                             // stale judgment ignored
+
+  router.observe(ev('identity.classified', 'g', { tier: 1, label: 'signed_agent', verified: true }));
+  assert.equal(router.decide('g', 0.83, ['heavy-burst:9reqs']).score, router.TIER1_TRUST_CAP);
+  assert.ok(!router.decide('g', 0.83, ['heavy-burst:9reqs']).reasons.includes('heavy-burst:9reqs'));
+  router.observe(ev('risk.scored', 'g', { source: 'judgment', score: 0.1, injection: true }));
+  assert.equal(router.decide('g', 0.05).score, 0.5);                            // injection floor still applies to signed agents
+
+  router.observe(ev('identity.classified', 'h', { tier: 1, label: 'signed_agent', verified: false }));
+  assert.equal(router.decide('h', 0.6).score, 0.6);                             // unverified tier 1 gets no trust
+  router.observe(ev('identity.classified', 'i', { tier: 5, label: 'spoofed_signature' }));
+  assert.ok(Math.abs(router.decide('i', 0.2).score - 0.45) < 1e-9);
+  router.reset();
+});
+
+// ─── Judgment (stubbed classifier / jev / openai) ───────────────────────────
+const jevOk = (yes, level = 0) => ({
+  ok: true, status: 200,
+  json: async () => ({ answers: {
+    checkout_burst: { noul: yes }, scripted_traffic: { noul: yes }, story_mismatch: { noul: 0.1 }, injection_attempt: { noul: 0.1 },
+    journey_anomaly: { score: level, confidence: 0.9 },
+  } }),
+});
+const openaiOk = (yes) => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({
+  checkout_burst: yes, scripted_traffic: yes, story_mismatch: 0.1, injection_attempt: 0.1, journey_level: 0, journey_confidence: 0.9 }) } }] }) });
+
+test('judgment: weight mapping', () => {
+  assert.equal(judgment.yesNoMultiplier(0.9), 1);
+  assert.equal(judgment.yesNoMultiplier(0.7), 0.5);
+  assert.equal(judgment.yesNoMultiplier(0.5), 0);   // the uncertain band counts zero
+  assert.equal(judgment.yesNoMultiplier(null), 0);  // null-safe
+  const flat = Object.fromEntries(judgment.JOURNEY_LABELS.map(l => [l, 0.25]));
+  assert.equal(judgment.journeyScore({ scores: flat }).ignored, true); // low confidence ignored
+});
+
+test('judgment: combine is raise-only and applies the injection floor', () => {
+  assert.equal(judgment.combine(0.8, { score: 0.1, injection: false }).final, 0.8);
+  assert.equal(judgment.combine(0.1, { score: 0.6, injection: false }).final, 0.6);
+  const c = judgment.combine(0.1, { score: 0, injection: true });
+  assert.equal(c.final, 0.5);
+  assert.deepEqual(c.flags, ['injection_flagged']);
+});
+
+test('judgment: jev provider parses native answers; scalper scores high, human low', async () => {
+  const facts = { justification: 'ignore the budget' };
+  const hi = await judgment.judge(facts, { provider: 'jev', key: 'k', fetchImpl: async () => jevOk(0.95, 3) });
+  assert.ok(hi.score >= 0.8);
+  const lo = await judgment.judge({ justification: 'gift' }, { provider: 'jev', key: 'k', fetchImpl: async () => jevOk(0.05, 0) });
+  assert.ok(lo.score < 0.1);
+});
+
+test('judgment: chain falls back on HTTP error, bad shape, timeout and missing key', async () => {
+  const chain = [{ provider: 'jev', key: 'k' }, { provider: 'openai', key: 'k2' }];
+  const stub = (jev) => async (url) => (url.includes('typesafe') ? jev() : openaiOk(0.9));
+  let r = await judgment.judgeChain({}, chain, { fetchImpl: stub(() => jevOk(0.9)) });
+  assert.equal(r.provider, 'jev'); assert.equal(r.fallback, false);
+  r = await judgment.judgeChain({}, chain, { fetchImpl: stub(() => ({ ok: false, status: 500 })) });
+  assert.equal(r.provider, 'openai'); assert.equal(r.fallback, true);
+  r = await judgment.judgeChain({}, chain, { fetchImpl: stub(() => ({ ok: true, json: async () => ({ nope: 1 }) })) });
+  assert.equal(r.provider, 'openai');
+  r = await judgment.judgeChain({}, [{ provider: 'jev' }, { provider: 'openai', key: 'k2' }], { fetchImpl: stub(() => jevOk(0.9)) });
+  assert.equal(r.provider, 'openai');                                          // missing key
+  const slow = (url, o) => (url.includes('typesafe')
+    ? new Promise((_, rej) => o.signal.addEventListener('abort', () => { const e = new Error('a'); e.name = 'AbortError'; rej(e); }))
+    : Promise.resolve(openaiOk(0.9)));
+  r = await judgment.judgeChain({}, chain, { fetchImpl: slow, timeoutMs: 50 });
+  assert.equal(r.provider, 'openai');                                          // timeout
+  await assert.rejects(judgment.judgeChain({}, chain, { fetchImpl: async () => ({ ok: false, status: 500 }) }), (e) => e.attempts.length === 2);
+});
+
+test('persistence: queues entries, batches inserts, retries after a failure, never throws to the caller', async () => {
+  process.env.DATABASE_URL = 'postgresql://u:p@localhost/x?sslmode=disable';
+  delete process.env.PERSIST_AUDIT;
+  const persistence = require('../gateway/persistence');
+  const { EventEmitter } = require('events');
+  const auditLog = Object.assign(new EventEmitter(), { all: () => [] });
+  const calls = [];
+  let failNext = true;
+  const pool = { on() {}, end: async () => {}, query: async (sql, params) => {
+    calls.push(sql.trim().slice(0, 18));
+    if (/INSERT/.test(sql) && failNext) { failNext = false; throw new Error('db down'); }
+    return { rows: [] };
+  } };
+  await persistence.start(auditLog, { poolFactory: () => pool });
+  auditLog.emit('entry', { seq: 1, ts: new Date().toISOString(), type: 'X', sessionId: 's', message: 'm', meta: {} });
+  auditLog.emit('entry', { seq: 2, ts: new Date().toISOString(), type: 'Y', sessionId: 's', message: 'm', meta: {} });
+  await persistence.flush();                                   // fails, rows stay queued
+  assert.equal(persistence.stats().persisted_rows, 0);
+  assert.equal(persistence.stats().queue_depth, 2);
+  assert.equal(persistence.stats().failures, 1);
+  await persistence.flush();                                   // retry succeeds
+  assert.equal(persistence.stats().persisted_rows, 2);
+  assert.equal(persistence.stats().queue_depth, 0);
+  await persistence.stop();
+  delete process.env.DATABASE_URL;
+});
+
+test('env loader: real environment wins, empty values stay unset, quotes stripped', () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const f = path.join(os.tmpdir(), `envtest-${Date.now()}`);
+  fs.writeFileSync(f, '# c\nT_A=1\nT_B="two"\nT_C=\nT_D=from-file\n');
+  process.env.T_D = 'from-env';
+  loadEnv(f);
+  assert.equal(process.env.T_A, '1');
+  assert.equal(process.env.T_B, 'two');
+  assert.equal(process.env.T_C, undefined);
+  assert.equal(process.env.T_D, 'from-env');
+  for (const k of ['T_A', 'T_B', 'T_D']) delete process.env[k];
+  fs.unlinkSync(f);
+});
+
+test('currency: rupees with Indian digit grouping, and limits that keep the 3x auto-deny rule meaningful', () => {
+  const c = require('../gateway/currency');
+  assert.equal(c.fmt(100000), '₹1,00,000');
+  assert.equal(c.fmt(1600), '₹1,600');
+  assert.equal(c.fmt(12500), '₹12,500');
+  assert.equal(c.fmt(2400.5), '₹2,400.5');
+  assert.equal(c.CODE, 'INR');
+  assert.ok(c.WALLET_DAILY_LIMIT > c.WALLET_TX_LIMIT, 'daily cap must exceed the per-transaction limit');
+  assert.ok(c.WALLET_TX_LIMIT * 3 < 100000, 'the ₹1,00,000 package must sit above the 3x auto-deny threshold');
+});
+
+test('approval engine: a missing session is refused with a reason, never replaced by a blank one', () => {
+  const sessions = require('../gateway/session-store');
+  const approval = require('../gateway/approval-engine');
+  const id = 'unit-gone-session';
+  sessions.get(id).riskScore = 0.95;
+  const { hash } = approval.createApproval(id, 'WALLET_CHECKOUT', { amount: 7000, item: 'x' }, { score: 0.95, reasons: [], route: 'QUARANTINE' });
+  sessions.delete(id); // what the idle purge used to do to a session with a decision still waiting
+  let ran = false;
+  const r = approval.applyApproval(hash, () => { ran = true; return {}; });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'session_expired');
+  assert.equal(ran, false, 'nothing may execute');
+  assert.equal(sessions.has(id), false, 'no blank session was invented (it used to be recreated with risk 0)');
+  assert.equal(approval.getPending(hash), undefined);
+});
+
+test('approval engine: deny can name a non-human actor and a reason', () => {
+  const sessions = require('../gateway/session-store');
+  const approval = require('../gateway/approval-engine');
+  const log = require('../gateway/audit-log');
+  const id = 'unit-policy-deny';
+  sessions.get(id);
+  const { hash } = approval.createApproval(id, 'WALLET_CHECKOUT', { amount: 1 }, { score: 0, reasons: [], route: 'ALLOW' });
+  assert.equal(approval.denyApproval(hash, 'policy', 'session blocked').ok, true);
+  const line = log.query({ sessionId: id, types: ['DENIED'] }).pop().message;
+  assert.match(line, /by policy/);
+  assert.match(line, /session blocked/);
+  assert.equal(approval.getApplied(hash).result, 'denied');
+});
+
+test('variety: seeded, replayable, and always within the rules each agent is meant to test', () => {
+  const V = require('../agents/variety');
+  const seq = (seed) => { const r = V.makeRng(seed); return Array.from({ length: 8 }, () => r.int(1, 1000)).join(','); };
+  assert.equal(seq(7), seq(7), 'the same seed replays the same run');
+  assert.notEqual(seq(7), seq(8), 'different seeds differ');
+  assert.equal(V.makeRng(undefined).seed === V.makeRng(undefined).seed, false, 'no seed means a fresh random run each time');
+
+  // What each agent may buy is what makes its scenario meaningful.
+  assert.ok(V.affordable.length >= 3 && V.affordable.every(p => p.price <= V.WALLET_TX_LIMIT), 'honest shoppers stay under the per-purchase limit');
+  assert.ok(V.hoardable.length >= 3, 'a tout has several things to hoard');
+  assert.ok(V.whales.length >= 2 && V.whales.every(p => p.price > V.WALLET_TX_LIMIT * 3), 'sweet talk always targets something above the auto-deny line');
+  for (const p of V.products) assert.ok(p.name.toLowerCase().includes(V.keyword(p)), `search keyword "${V.keyword(p)}" must find ${p.name}`);
+  const catalog = require('../catalog').INVENTORY;
+  assert.equal(V.byId('1002').price, catalog['1002'].price, 'agents read the same catalog the shop serves');
+});
+
+// ─── Scoreboard maths ───
+function caseBook() {
+  let n = 0;
+  const T = (sec) => new Date(Date.UTC(2026, 8, 26, 10, 0, sec)).toISOString();
+  const E = (type, sessionId, meta = {}, message = '', sec = n++) => ({ ts: T(sec), type, sessionId, message, meta });
+  return [
+    E('TOOL_CALL', 'legit-1'), E('RISK', 'legit-1', { score: 0.05, route: 'ALLOW' }), E('TOOL_CALL', 'legit-1'), E('RISK', 'legit-1', { score: 0.18, route: 'ALLOW' }),
+    E('CHECKOUT_EXECUTED', 'legit-1', { amount: 3000, item: 'Concert Ticket x2' }),
+    E('TOOL_CALL', 'scalper-1'), E('RISK', 'scalper-1', { score: 0.1, route: 'ALLOW' }),
+    E('APPROVAL_PENDING', 'scalper-1', { hash: 'a1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }), E('WALLET_APPROVAL_REQUIRED', 'scalper-1', { amount: 7000, hash: 'a1' }),
+    E('SANDBOX', 'scalper-1'), E('RISK', 'scalper-1', { score: 0.5, route: 'QUARANTINE' }),
+    E('APPROVAL_PENDING', 'scalper-1', { hash: 'a2', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }), E('WALLET_APPROVAL_REQUIRED', 'scalper-1', { amount: 7000, hash: 'a2' }),
+    E('WALLET_AUTO_DENIED', 'scalper-1', { amount: 31000 }), E('RISK', 'scalper-1', { score: 0.95, route: 'BLOCK_PROPOSED' }),
+    E('BLOCK_PROPOSED', 'scalper-1', { hash: 'b1' }), E('APPROVAL_PENDING', 'scalper-1', { hash: 'b1', action: 'BLOCK_SESSION', actionData: {} }),
+    E('APPROVED', 'scalper-1', { hash: 'b1', action: 'BLOCK_SESSION' }, '[APPROVED] by human-1', 40), E('BLOCK_APPLIED', 'scalper-1', {}, '', 40), E('VERIFIED', 'scalper-1', { statusCode: 403 }, '', 41),
+    E('DENIED', 'scalper-1', { hash: 'a1' }, '[DENIED] by policy @ 10:00:41 action=WALLET_CHECKOUT (session blocked)', 41),
+    E('DENIED', 'scalper-1', { hash: 'a2' }, '[DENIED] by policy @ 10:00:41 action=WALLET_CHECKOUT (session blocked)', 41),
+    E('TOOL_CALL', 'ambiguous-1'), E('UNTRUSTED_INPUT_IGNORED', 'ambiguous-1', {}), E('WALLET_AUTO_DENIED', 'ambiguous-1', { amount: 100000 }),
+    E('APPROVAL_PENDING', 'tf-attacker-normal', { hash: 'c1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }, '', 10),
+    E('APPROVED', 'tf-attacker-normal', { hash: 'c1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }, '', 14),
+    E('APPROVAL_PENDING', 'tf-attacker-inject', { hash: 'd1', action: 'WALLET_CHECKOUT', actionData: { amount: 9000 } }, '', 20),
+    E('DENIED', 'tf-attacker-inject', { hash: 'd1' }, '[DENIED] by human-1 @ 10:00:29 action=WALLET_CHECKOUT', 29),
+  ];
+}
+
+test('scoreboard: counts caught, verdicts, money and the Judge correctly', () => {
+  const { summarize } = require('../gateway/analytics');
+  const r = summarize(caseBook());
+  assert.deepEqual([r.headline.visitors, r.headline.caught, r.headline.cleared, r.headline.caughtPercent], [3, 1, 2, 33]);
+  assert.deepEqual(r.verdicts, { ALLOW: 2, QUARANTINE: 0, BLOCK_PROPOSED: 0, BLOCKED: 1 });   // a visitor counts by the WORST route they reached
+  assert.equal(r.headline.arrestsSigned, 1);
+  assert.equal(r.headline.sweetTalkIgnored, 1);
+  assert.deepEqual([r.money.executed.count, r.money.executed.amount], [1, 3000]);
+  assert.deepEqual([r.money.heldForJudge.count, r.money.heldForJudge.amount], [2, 14000]);
+  assert.deepEqual([r.money.refusedOutright.count, r.money.refusedOutright.amount], [2, 131000]);
+  assert.deepEqual([r.money.judgeApproved.count, r.money.judgeApproved.amount], [1, 7000]);
+  assert.deepEqual([r.money.judgeRefused.count, r.money.judgeRefused.amount], [1, 9000]);
+  assert.deepEqual([r.money.closedByPolicy.count, r.money.closedByPolicy.amount], [2, 14000]);
+  assert.equal(r.money.keptSafe, 131000 + 9000 + 14000, 'kept safe = refused outright + refused by the Judge + closed by policy');
+  assert.equal(r.headline.moneyKeptSafe, r.money.keptSafe);
+  assert.equal(r.judge.closedByPolicy, 2, 'policy closures are not counted as human refusals');
+  assert.equal(r.judge.refused, 1);
+  assert.equal(r.judge.avgDecisionSeconds, 12.3);
+});
+
+test('scoreboard: per-character table, recent cases and timeline', () => {
+  const { summarize } = require('../gateway/analytics');
+  const r = summarize(caseBook());
+  const tout = r.byWho.find(w => w.who === 'The Ticket Tout');
+  assert.deepEqual([tout.visitors, tout.caught, tout.cleared, tout.refused], [1, 1, 0, 31000]);
+  assert.equal(r.byWho.find(w => w.who === 'The Regular').spent, 3000);
+  assert.equal(r.recent[0].id, 'scalper-1');                          // most recent first
+  assert.equal(r.recent[0].verdict, 'BLOCKED');
+  assert.equal(r.recent[0].threat, 95);
+  assert.ok(!r.recent.some(x => x.id.startsWith('tf-attacker')), 'sessions that only appear in approvals are not visitors');
+  const total = r.timeline.buckets.reduce((a, b) => a + b.cleared + b.held + b.refused + b.caught, 0);
+  assert.equal(total, 1 + 2 + 2 + 2, 'sales + held + refused + caught events are all on the timeline');
+  assert.deepEqual(require('../gateway/analytics').summarize([]).headline.visitors, 0, 'an empty log is fine');
+});
+
+test('scoreboard: nicknames and bucket sizes', () => {
+  const a = require('../gateway/analytics');
+  assert.equal(a.whoIs('scalper-123'), 'The Ticket Tout');
+  assert.equal(a.whoIs('tf-attacker-inject'), 'The Smooth Talker (AI)');
+  assert.equal(a.whoIs('somebody'), 'Other callers');
+  assert.equal(a.whoIs('e2e-scalper'), 'The Ticket Tout');
+  assert.equal(a.whoIs('legit-1790409964700'), 'The Regular');
+  assert.equal(a.bucketMs(30_000), 10_000);
+  assert.ok(a.bucketMs(3 * 3_600_000) >= 300_000, 'a 3 hour span must not draw thousands of bars');
+});
+
+test('scoreboard page: renders real-shaped data without errors', () => {
+  const fs = require('fs'), vm = require('vm');
+  const html = fs.readFileSync(require('path').join(__dirname, '..', 'ui', 'scoreboard.html'), 'utf8');
+  const js = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const els = {};
+  const mk = (id) => ({ id, _h: '', _t: '', className: '', style: {}, classList: { add() {}, remove() {} }, setAttribute() {}, addEventListener() {},
+    set innerHTML(v) { this._h = v; }, get innerHTML() { return this._h; }, set textContent(v) { this._t = v; }, get textContent() { return this._t; }, querySelector() { return this._q || (this._q = mk('q')); } });
+  const doc = { getElementById: (id) => els[id] || (els[id] = mk(id)), addEventListener() {}, hidden: false };
+  const ctx = { document: doc, console, setInterval() {}, fetch: async () => ({ ok: false, json: async () => ({}) }) };
+  vm.createContext(ctx);
+  vm.runInContext(js, ctx);
+  const data = { ...require('../gateway/analytics').summarize(caseBook()), range: 'live', tiers: { 1: 2, 2: 0, 3: 5, 4: 0, 5: 3, human: 1 },
+    secondOpinion: { calls: 9, raisedRisk: 3, injectionsFlagged: 2, fallbacks: 0, providerFallbacks: 0, servedBy: { jev: 9 } } };
+  ctx.__d = data;
+  vm.runInContext('render(__d)', ctx);
+  assert.equal(els.tCaught._t, '1');
+  assert.equal(els.tSafe._t, '₹1,54,000');                             // Indian digit grouping
+  assert.match(els.verdicts._h, /DOOR SLAMMED/);
+  assert.match(els.money._h, /₹1,31,000/);
+  assert.match(els.chart._h, /<svg/);
+  assert.match(els.recent._q._h, /scalper-1/);
+  assert.match(els.recent._q._h, /DOOR SLAMMED/);
+  assert.match(els.byWho._q._h, /The Ticket Tout/);
+});
