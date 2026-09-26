@@ -139,6 +139,24 @@ They write a few rows to Neon and delete them again.
 - Judgment failover under a real jev outage (only the broken-key case is tested)
 - Load: the gateway keeps everything in one process's memory
 
+## 6a. Run the agents on the TrueForge harness
+
+TrueForge (`@truefoundry/trueforge`) is the agent harness the hackathon asks for. It runs the agent loop, calls our MCP tools and shows every step in a chat UI at **http://localhost:8790**. The gateway does not need it, but the LLM agents can be driven and watched there.
+
+```bash
+npm run tool-server        # our MCP tools, http://localhost:3007/mcp  (npm start already runs it)
+npm run trueforge          # the harness on :8790, with a localhost allowlist (see below)
+npm run trueforge:setup    # registers the model, the shop-tools MCP server and three agents
+```
+
+Then open http://localhost:8790, pick an agent (`shopping-attacker`, `shopping-attacker-inject` or `defender`), and press send. Every tool call it makes lands in the gateway and shows on the dashboard as session `tf-attacker-normal`, `tf-attacker-inject` and so on.
+
+- **Where to monitor:** the TrueForge UI (port 8790) shows the agent's steps, tool calls and answers per session. The dashboard (3005) shows the gateway's view of the same traffic: risk, route, approvals. The API lists sessions at `http://localhost:8790/api/v1/sessions`.
+- **The localhost allowlist:** by default the harness refuses to call `localhost` ("Outbound URL blocked"). `npm run trueforge` sets `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'`, which allows only those two hosts.
+- **Human gate inside TrueForge:** the `defender` agent's `apply_policy` tool requires approval in TrueForge, so a person must click before the defender can approve or deny anything. This closes known issue 1 for the TrueForge-run defender. The standalone `npm run agents:defender` script has no such gate.
+- **No sandbox locally:** TrueForge's code sandbox needs `bubblewrap`, `socat` and `ripgrep`. Without `socat` and `ripgrep` the sandbox is unavailable, so skills that need one cannot run. The agents here use plain instructions instead.
+- **No login:** TrueForge runs with auth disabled. Do not expose port 8790 to the internet: anyone with the link could run agents on your OpenAI key and drive the shop.
+
 ## 7. Troubleshooting
 
 | Symptom | Cause and fix |
@@ -149,6 +167,8 @@ They write a few rows to Neon and delete them again.
 | classifier.dev `403 proxy_requires_payment` | The free tier is blocked for this network, and the key needs a funded workspace. Use `JUDGE_PROVIDER=jev` instead |
 | jev `401` | `TYPESAFE_API_KEY` is wrong or unset |
 | Signed agent shows tier 5 | Gateway and agent use different `AGENT_SIGNING_KEY` values, or the clocks differ by more than 60 s |
+| TrueForge says `Outbound URL blocked for host "localhost"` | Start it with `npm run trueforge` (sets the allowlist), not bare `npx` |
+| TrueForge cannot connect to `shop-tools` | The tool server must be the current one: `/mcp` used to answer `Cannot POST /mcp`. Restart `npm run tool-server` |
 | LLM attacker says tool server not responding | Start `npm run tool-server`. If you changed `TOOL_SERVER_PORT` make sure both processes see the same value |
 | `persistence_unavailable` (503) on `/log/persisted` | No `DATABASE_URL`, or Neon unreachable. The gateway keeps serving and retries |
 | e2e tests fail to start | Ports 13001, 13002, 3003 or 3004 are busy. Stop a running `npm start` first |

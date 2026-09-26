@@ -28,7 +28,7 @@
 const express = require('express');
 const http = require('http');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
-const { createMcpExpressApp } = require('@modelcontextprotocol/sdk/server/express.js');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
 const dns = require('dns').promises;
 const cors = require('cors');
@@ -168,11 +168,20 @@ const mcp = new McpServer({
 });
 
 const toolHandlers = {};
+const toolDefs = [];
 
 function defineTool(name, description, schema, handler) {
   const wrapped = tracked(name, handler);
   toolHandlers[name] = wrapped;
+  toolDefs.push({ name, description, schema, wrapped });
   mcp.tool(name, description, schema, wrapped);
+}
+
+// Stateless MCP: a fresh server per request, so any number of clients (e.g. the TrueForge harness) can connect.
+function buildMcpServer() {
+  const server = new McpServer({ name: 'agent-quarantine-tools', version: '1.0.0' });
+  for (const d of toolDefs) server.tool(d.name, d.description, d.schema, d.wrapped);
+  return server;
 }
 
 // ── STORE TOOLS ───────────────────────────────────────────────────────────────
@@ -460,9 +469,22 @@ app.post('/call/:tool', async (req, res) => {
   }
 });
 
-// Mount MCP at /mcp
-const mcpApp = createMcpExpressApp({ server: mcp });
-app.use('/mcp', mcpApp);
+// MCP over streamable HTTP at /mcp. (The earlier createMcpExpressApp mount had no transport attached,
+// so /mcp answered "Cannot POST /mcp" and no MCP client could ever connect.)
+app.post('/mcp', async (req, res) => {
+  const server = buildMcpServer();
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: err.message }, id: null });
+  }
+});
+const mcpNotAllowed = (req, res) => res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this MCP endpoint is stateless, use POST' }, id: null });
+app.get('/mcp', mcpNotAllowed);
+app.delete('/mcp', mcpNotAllowed);
 
 app.listen(TOOL_SERVER_PORT, () => {
   console.log(`[ToolServer] MCP tool server running on :${TOOL_SERVER_PORT}`);

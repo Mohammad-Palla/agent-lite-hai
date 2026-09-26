@@ -22,7 +22,9 @@
     "test:unit": "node --test test/unit.test.js",
     "test:e2e": "node --test test/e2e.test.js",
     "test:live": "LIVE=1 node --test --test-timeout=420000 test/live.test.js",
-    "test:judges": "node scripts/compare-judges.js jev openai"
+    "test:judges": "node scripts/compare-judges.js jev openai",
+    "trueforge": "OUTBOUND_URL_ALLOWED_HOSTS='[\"localhost\",\"127.0.0.1\"]' node node_modules/@truefoundry/trueforge/dist/cli.js --port 8790",
+    "trueforge:setup": "node scripts/trueforge-setup.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
