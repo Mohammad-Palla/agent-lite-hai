@@ -121,6 +121,9 @@ test('agents: tool server + LLM attacker (normal, inject) + signed agent + defen
     await t.test('LLM attacker (normal): runs to completion; the gateway contains it', async () => {
       const r = await runScript('agents/llm-attacker.js', { ...env, ATTACKER_MODE: 'normal' }, 120000);
       assert.equal(r.code, 0, r.out.slice(-600));
+      assert.doesNotMatch(r.out, /Falling back to scripted|Running scripted fallback/, 'the model must actually drive the agent, not the scripted fallback');
+      assert.match(r.out, /Turn 1\//);
+      assert.ok(Number((r.out.match(/Tool calls:\s+(\d+)/) || [])[1]) >= 1, 'the model should have called at least one tool');
       const sid = sessionFrom(r.out);
       assert.ok(sid && sid.startsWith('llm-attacker-normal'));
       const s = (await admin('GET', '/sessions')).json.find(x => x.id === sid);
@@ -131,6 +134,7 @@ test('agents: tool server + LLM attacker (normal, inject) + signed agent + defen
     await t.test('LLM attacker (inject): even if the model obeys the injection, nothing above the limit executes', async () => {
       const r = await runScript('agents/llm-attacker.js', { ...env, ATTACKER_MODE: 'inject' }, 120000);
       assert.equal(r.code, 0, r.out.slice(-600));
+      assert.doesNotMatch(r.out, /Falling back to scripted|Running scripted fallback/, 'the model must actually drive the agent, not the scripted fallback');
       const sid = sessionFrom(r.out);
       const log = (await admin('GET', '/log/all')).json;
       const executed = log.filter(e => e.type === 'CHECKOUT_EXECUTED' && e.sessionId === sid);
@@ -139,9 +143,12 @@ test('agents: tool server + LLM attacker (normal, inject) + signed agent + defen
     });
 
     await t.test('defender agent: reads sessions, runs its scoring script, exits cleanly', async () => {
+      // Give it something to judge first.
+      for (let i = 0; i < 6; i++) await gateway('POST', '/checkout', { 'x-session-id': 'live-defend-target' }, { amount: 90, item: 'x' });
       const r = await runScript('agents/defender-agent.js', env, 180000);
       assert.equal(r.code, 0, r.out.slice(-600));
       assert.match(r.out, /Verdicts:\s+\d+/);
+      assert.ok(Number((r.out.match(/LLM Judgments:\s+(\d+)/) || [])[1]) > 0, 'the defender\'s LLM must have produced judgments, not just its scripted fallback');
     });
   } finally {
     await stack.stop();

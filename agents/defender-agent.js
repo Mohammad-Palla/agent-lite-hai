@@ -154,7 +154,9 @@ Respond with a JSON object:
         { role: 'user', content: prompt }
       ],
       response_format: { type: 'json_object' },
-      max_tokens: 300,
+      // Newer models reject max_tokens; reasoning tokens count against the cap, so leave headroom.
+      max_completion_tokens: 1000,
+      ...(/^gpt-[56]/.test(MODEL) ? { reasoning_effort: process.env.AGENT_REASONING_EFFORT || 'none' } : {}),
     });
 
     const https = require('https');

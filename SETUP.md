@@ -158,7 +158,7 @@ They write a few rows to Neon and delete them again.
 
 Found while building and testing. None block the demo, but they matter beyond it.
 
-1. **The defender agent approves and denies irreversible actions itself.** `apply_policy` calls the admin `/approve` and `/deny` endpoints directly, so an LLM can approve a block or a wallet charge with no human. The plan says the defender only proposes. Decide whether it should create a proposal that a human then approves.
+1. **The defender agent can approve irreversible actions itself.** Its `apply_policy` tool calls the admin `/approve` and `/deny` endpoints directly, and for a pending block at risk 0.70 or more it approves without a human. The plan says the defender only proposes. This path is in the code but was not triggered in the live run, because a person approved the block first. Decide whether it should create a proposal that a human then approves.
 2. **The admin API has no authentication** and allows any origin, and the approver is recorded as a fixed "human-1". Anyone who can reach port 3002 can approve.
 3. **Sessions are self-declared** (`x-session-id`), so an agent can rotate ids to shed a bad score. Signed agents (tier 1) are the fix for well-behaved agents; unsigned ones can still rotate.
 4. **Signed agents use a shared-secret HMAC** with a demo default key in source. Real deployments need asymmetric signatures.
@@ -168,3 +168,4 @@ Found while building and testing. None block the demo, but they matter beyond it
 8. **A session's route updates on its next request,** so a judgment result that arrives after a session's last request (for example the injection floor) shows in events and stats but not in the session's stored route.
 9. **Judgment sends synthetic session facts to third-party model APIs.** Do not point real customer traffic at it without deciding what may leave the process.
 10. **classifier.dev** returns 403 from some networks and needs a funded key.
+11. **gpt-5/6 models on chat/completions:** they reject `max_tokens` (use `max_completion_tokens`) and reject function tools unless `reasoning_effort` is `none`. The LLM attacker and defender were silently falling back to scripted behaviour because of this. Fixed; the live tests now fail if an agent falls back.

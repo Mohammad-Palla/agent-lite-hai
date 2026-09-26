@@ -287,7 +287,10 @@ async function callOpenAI(messages) {
       messages,
       tools: TOOLS,
       tool_choice: 'auto',
-      max_tokens: 500,
+      // Newer models reject max_tokens; reasoning tokens count against the cap, so leave headroom.
+      max_completion_tokens: 3000,
+      // gpt-5/6 models reject function tools unless reasoning_effort is explicitly "none" on chat/completions
+      ...(/^gpt-[56]/.test(MODEL) ? { reasoning_effort: 'none' } : {}),
     });
 
     const options = {
