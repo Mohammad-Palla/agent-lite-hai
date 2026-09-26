@@ -25,7 +25,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const MODE = process.env.ATTACKER_MODE || process.argv[2] || 'normal';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = process.env.AGENT_MODEL || process.env.OPENAI_MODEL || 'gpt-6-luna';
-const SESSION_ID = `llm-attacker-${MODE}-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `llm-attacker-${MODE}-${Date.now()}`;
 const MAX_TURNS = 12;
 const TOOL_SERVER_URL = process.env.TOOL_SERVER_URL || `http://localhost:${process.env.TOOL_SERVER_PORT || 3007}`;
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
@@ -466,6 +466,17 @@ function printStats() {
   console.log(`[ATTACKER]  Injection followed: ${stats.injectionFollowed ? 'YES' : 'NO'}`);
   console.log(`[ATTACKER]  Injection blocked:  ${stats.injectionBlocked ? 'YES' : 'NO'}`);
   console.log('[ATTACKER] ═══════════════════════════════');
+  try {
+    const completeReq = http.request({
+      hostname: 'localhost',
+      port: GATEWAY_PORT,
+      path: '/session/complete',
+      method: 'POST',
+      headers: { 'x-session-id': SESSION_ID, 'content-type': 'application/json' },
+    });
+    completeReq.on('error', () => {});
+    completeReq.end();
+  } catch (_) {}
 }
 
 // Export standard module contract

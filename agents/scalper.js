@@ -14,7 +14,7 @@
 
 const http = require('http');
 
-const SESSION_ID = `scalper-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `scalper-${Date.now()}`;
 const GATEWAY = { host: 'localhost', port: Number(process.env.GATEWAY_PORT) || 3001 };
 const CONCURRENCY = 5;
 const ROUNDS = 3;
@@ -83,6 +83,8 @@ async function run() {
 
   console.log('[SCALPER] All rounds fired. Check the UI for approval modal.');
   console.log('[SCALPER] Session:', SESSION_ID);
+  await sleep(1000);
+  await req('POST', '/session/complete', { status: 'scalper_done' }).catch(() => {});
 }
 
 run().catch(err => {

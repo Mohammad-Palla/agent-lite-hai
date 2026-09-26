@@ -19,7 +19,7 @@ const { createHmac } = require('crypto');
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const SESSION_ID = `signed-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `signed-${Date.now()}`;
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
 
 // ─── Signing key (in real use, loaded from secure key store) ──────────────────
@@ -125,6 +125,8 @@ async function run() {
   console.log(`[SIGNED]   → Signed agent: tier 1, instant allow, purchase within budget executed`);
   console.log(`[SIGNED]   → Unsigned agents: tier 4, scored on behaviour, may be quarantined`);
   console.log(`[SIGNED]   → Good agents get a front door. Unknown agents get contained.`);
+  await new Promise(r => setTimeout(r, 1000));
+  await req('POST', '/session/complete', { status: 'signed_done' }).catch(() => {});
 }
 
 run().catch(err => {

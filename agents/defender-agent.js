@@ -21,7 +21,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL = process.env.AGENT_MODEL || process.env.OPENAI_MODEL || 'gpt-6-luna';
 const ADMIN_PORT = Number(process.env.ADMIN_PORT) || 3002;
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
-const SESSION_ID = `defender-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `defender-${Date.now()}`;
 const POLL_INTERVAL_MS = 3000;
 const MAX_ROUNDS = 10;
 
@@ -392,6 +392,17 @@ function printStats() {
   console.log(`[DEFENDER]  Policy calls:       ${stats.policyApplications}`);
   console.log(`[DEFENDER]  Proposals handled:  ${stats.proposalsApproved + stats.proposalsRejected}`);
   console.log('[DEFENDER] ═══════════════════════════════');
+  try {
+    const completeReq = http.request({
+      hostname: 'localhost',
+      port: GATEWAY_PORT,
+      path: '/session/complete',
+      method: 'POST',
+      headers: { 'x-session-id': SESSION_ID, 'content-type': 'application/json' },
+    });
+    completeReq.on('error', () => {});
+    completeReq.end();
+  } catch (_) {}
 }
 
 // Export standard module contract

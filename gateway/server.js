@@ -187,6 +187,18 @@ gatewayApp.use((req, res) => {
     return res.status(204).end();
   }
 
+  // Agent completion signal: immediately marks session completed
+  if (req.url.startsWith('/session/complete')) {
+    const s = sessions.get(sessionId);
+    if (s) {
+      s.status = 'completed';
+      s.completedAt = Date.now();
+      s.lastActivityTs = Date.now();
+      log.append('SESSION_COMPLETE', sessionId, `[COMPLETED] session-${sessionId} marked complete`);
+    }
+    return res.json({ ok: true, status: 'completed', sessionId });
+  }
+
   const session = sessions.recordRequest(sessionId, req.method, req.url);
   // Signed-agent proof (tier 1) is verified here and handed to the classifier as a signal
   const sigCheck = signature.verify(req.headers, sessionId);
@@ -452,6 +464,18 @@ adminApp.get('/log/all', (req, res) => {
   res.json(log.all());
 });
 
+// Mark session completed
+adminApp.post('/session/:id/complete', (req, res) => {
+  const s = sessions.get(req.params.id);
+  if (s) {
+    s.status = 'completed';
+    s.completedAt = Date.now();
+    s.lastActivityTs = Date.now();
+    log.append('SESSION_COMPLETE', req.params.id, `[COMPLETED] session-${req.params.id} marked complete`);
+  }
+  res.json({ ok: true, status: 'completed' });
+});
+
 // Run agent scenario from UI
 adminApp.post('/run-agent/:type', (req, res) => {
   const { type } = req.params;
@@ -472,7 +496,8 @@ adminApp.post('/run-agent/:type', (req, res) => {
   const scriptPath = path.join(__dirname, '..', 'agents', scriptName);
   log.append('SYSTEM', 'gateway', `[LAUNCH] Spawning ${type} agent script: ${scriptName}`);
 
-  const env = { ...process.env };
+  const sessionId = `${type}-${Date.now()}`;
+  const env = { ...process.env, SESSION_ID: sessionId };
   if (type === 'llm-inject') env.ATTACKER_MODE = 'inject';
   if (type === 'llm-attacker') env.ATTACKER_MODE = 'normal';
 
@@ -480,8 +505,17 @@ adminApp.post('/run-agent/:type', (req, res) => {
   child.on('error', (err) => {
     log.append('SYSTEM', 'gateway', `[ERROR] Failed to run ${type} agent: ${err.message}`);
   });
+  child.on('exit', (code) => {
+    log.append('SYSTEM', 'gateway', `[COMPLETE] Agent ${type} run finished (code: ${code})`);
+    const s = sessions.get(sessionId);
+    if (s) {
+      s.status = 'completed';
+      s.completedAt = Date.now();
+      s.lastActivityTs = Date.now();
+    }
+  });
 
-  res.json({ ok: true, agent: type, script: scriptName, pid: child.pid });
+  res.json({ ok: true, agent: type, script: scriptName, pid: child.pid, sessionId });
 });
 
 /**
@@ -563,10 +597,39 @@ wss.on('connection', (ws) => {
   };
   log.on('entry', handler);
 
-  // Send session state every 500ms
+  // Send session state every 500ms. Inactive sessions idle for >15s are marked
+  // 'completed' (fallback GC); explicit completion is handled via /session/complete.
+  const SESSION_IDLE_MS    = 15_000;  // mark completed after 15s idle fallback
+  const SESSION_PURGE_MS   = 25_000;  // delete from store after 25s idle
+
   const sessionInterval = setInterval(() => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: 'sessions', sessions: sessions.all().map(s => ({
+    if (ws.readyState !== ws.OPEN) return;
+    const now = Date.now();
+    const all = sessions.all();
+    const visible = [];
+
+    for (const s of all) {
+      const idle = now - (s.lastActivityTs || s.createdAt);
+
+      // Purge sessions that have been idle for >25s
+      if (idle > SESSION_PURGE_MS) {
+        sessions.delete(s.id);
+        continue;
+      }
+
+      // Purge completed sessions after 3.5s so they stop broadcasting
+      if (s.status === 'completed' && s.completedAt && (now - s.completedAt > 3_500)) {
+        sessions.delete(s.id);
+        continue;
+      }
+
+      // Mark idle sessions as completed (sprite fades out in the UI)
+      if (idle > SESSION_IDLE_MS && s.status === 'active') {
+        s.status = 'completed';
+        s.completedAt = now;
+      }
+
+      visible.push({
         id: s.id,
         route: s.route,
         riskScore: s.riskScore,
@@ -583,8 +646,13 @@ wss.on('connection', (ws) => {
         identityTier: s.identityTier || 4,
         signatureValid: !!s.signatureValid,
         requestRate: (s.requestLog?.length || 0) / 10,
-      })) }));
+        status: s.status || 'active',
+        completedAt: s.completedAt || null,
+        lastActivityTs: s.lastActivityTs || s.createdAt,
+      });
     }
+
+    ws.send(JSON.stringify({ type: 'sessions', sessions: visible }));
   }, 500);
 
   ws.on('close', () => {

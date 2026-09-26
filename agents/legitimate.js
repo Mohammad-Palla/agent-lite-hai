@@ -10,7 +10,7 @@
 
 const http = require('http');
 
-const SESSION_ID = `legit-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `legit-${Date.now()}`;
 const GATEWAY = { host: 'localhost', port: Number(process.env.GATEWAY_PORT) || 3001 };
 
 function req(method, path, body, headers = {}) {
@@ -88,7 +88,9 @@ async function run() {
     console.log('[LEGIT] Checkout status:', checkout.status, checkout.body?.status);
   }
 
+  await sleep(1000);
   console.log('[LEGIT] Session complete.');
+  await req('POST', '/session/complete', { status: 'success', orderId: checkout.body?.orderId }).catch(() => {});
 }
 
 run().catch(err => {

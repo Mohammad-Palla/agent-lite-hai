@@ -21,7 +21,7 @@
 
 const http = require('http');
 
-const SESSION_ID = `ambiguous-${Date.now()}`;
+const SESSION_ID = process.env.SESSION_ID || `ambiguous-${Date.now()}`;
 const GATEWAY = { host: 'localhost', port: Number(process.env.GATEWAY_PORT) || 3001 };
 
 function req(method, path, body, headers = {}) {
@@ -118,6 +118,8 @@ async function run() {
   }
 
   console.log('\n[AMBIGUOUS] Session complete. Session ID:', SESSION_ID);
+  await sleep(1000);
+  await req('POST', '/session/complete', { status: 'ambiguous_done' }).catch(() => {});
 }
 
 run().catch(err => {
