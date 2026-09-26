@@ -18,6 +18,8 @@
  *   WS     Live log streaming to UI
  */
 
+require('./env').loadEnv(); // .env before anything reads process.env
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -30,6 +32,17 @@ const sessions = require('./session-store');
 const { scoreSession, routeFromScore, THRESHOLDS } = require('./risk-scorer');
 const approval = require('./approval-engine');
 const wallet = require('./wallet-firewall');
+const bus = require('./bus');
+const registry = require('./registry');
+const auditBridge = require('./audit-bridge');
+const signals = require('./signals');
+const router = require('./router');
+const persistence = require('./persistence');
+const moduleSet = require('./modules');
+
+// Register contract modules and start translating audit entries into bus events
+for (const [mod, state] of moduleSet.all) registry.register(mod, { state });
+auditBridge.start();
 
 const GATEWAY_PORT = 3001;
 const ADMIN_PORT = 3002;
@@ -52,6 +65,7 @@ function rateLimit(req, res, next) {
   rl.count++;
   _rateLimits.set(ip, rl);
   if (rl.count > RATE_MAX_REQ) {
+    bus.publish('ingress.rejected', req.headers['x-session-id'] || 'anon', { reason: 'rate_limited', ip });
     return res.status(429).json({ error: 'rate_limit_exceeded', retryAfter: RATE_WINDOW_MS / 1000 });
   }
   next();
@@ -88,9 +102,14 @@ function proxyRequest(targetPort, req, res, sessionId) {
 
 // ─── Score and update session ────────────────────────────────────────────────
 function updateScore(session) {
-  const { score, reasons } = scoreSession(session);
+  const det = scoreSession(session);
+  // Router combines deterministic + judgment + identity (raise-only)
+  const t0 = process.hrtime.bigint();
+  const decision = router.decide(session.id, det.score, det.reasons);
+  moduleSet.riskRouter.handle({ type: 'decision', latency_ms: Number(process.hrtime.bigint() - t0) / 1e6, raisedBy: decision.raisedBy });
+  const { score, reasons } = decision;
   const prevRoute = session.route;
-  const newRoute = routeFromScore(score);
+  const newRoute = decision.route;
 
   session.riskScore = score;
   session.riskReasons = reasons;
@@ -122,7 +141,7 @@ function updateScore(session) {
 
   log.append('RISK', session.id,
     `[RISK] session-${session.id} score ${score.toFixed(2)} (${reasons.join('+') || 'normal'}) route=${newRoute}`,
-    { score, reasons, route: newRoute }
+    { score, reasons, route: newRoute, deterministic: det.score, detReasons: det.reasons, components: decision.components, raisedBy: decision.raisedBy }
   );
 
   return session;
@@ -132,16 +151,32 @@ function updateScore(session) {
 const gatewayApp = express();
 gatewayApp.use(cors());
 gatewayApp.use(rateLimit);
+gatewayApp.use((req, res, next) => {
+  const t0 = process.hrtime.bigint();
+  res.on('finish', () => {
+    moduleSet.ingress.handle({ type: 'latency', latency_ms: Number(process.hrtime.bigint() - t0) / 1e6 });
+  });
+  next();
+});
 
 // All storefront routes go through the gateway
 gatewayApp.use((req, res) => {
   const sessionId = req.headers['x-session-id'] || 'anon';
 
   if (!validateSessionId(sessionId)) {
+    bus.publish('ingress.rejected', 'invalid', { reason: 'invalid_session_id' });
     return res.status(400).json({ error: 'invalid_session_id' });
   }
 
+  // Beacon: a JS-capable client pings this; never proxied, never scored as shopping traffic
+  if (req.url.startsWith('/beacon')) {
+    signals.recordBeacon(sessionId);
+    return res.status(204).end();
+  }
+
   const session = sessions.recordRequest(sessionId, req.method, req.url);
+  const { signals: sig, present } = signals.extract(sessionId, req);
+  bus.publish('signals.extracted', sessionId, { signals: sig, present });
   if (req.headers['x-agent-type']) {
     session.agentType = req.headers['x-agent-type'];
   }
@@ -240,6 +275,29 @@ adminApp.use(cors());
 adminApp.use(express.json({ limit: '10kb' }));
 adminApp.use(rateLimit);
 
+// Aggregated stats for every module (one card per module on the dashboard)
+adminApp.get('/stats/all', (req, res) => res.json(registry.statsAll()));
+
+adminApp.get('/stats/:name', (req, res) => {
+  const all = registry.statsAll();
+  const m = all.modules[req.params.name];
+  if (!m) return res.status(404).json({ error: 'unknown_module', modules: registry.names() });
+  res.json({ name: req.params.name, ...m });
+});
+
+// Fault switch: { "down": true|false } — module drops events, system must fail closed
+adminApp.post('/fault/:name', (req, res) => {
+  const ok = registry.setFault(req.params.name, !!(req.body && req.body.down));
+  if (!ok) return res.status(404).json({ error: 'unknown_module', modules: registry.names() });
+  log.append('SYSTEM', 'gateway', `[FAULT] module ${req.params.name} down=${!!(req.body && req.body.down)}`);
+  res.json({ ok: true, module: req.params.name, down: !!(req.body && req.body.down) });
+});
+
+// Recent bus events (for the defender agent and debugging)
+adminApp.get('/events', (req, res) => {
+  res.json(bus.history({ type: req.query.type, sessionId: req.query.session, limit: Math.min(parseInt(req.query.limit) || 100, 500) }));
+});
+
 // List sessions
 adminApp.get('/sessions', (req, res) => {
   res.json(sessions.all().map(s => ({
@@ -304,6 +362,24 @@ adminApp.get('/log', (req, res) => {
   const since = parseInt(req.query.since) || 0;
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
   res.json(log.query({ since, limit }));
+});
+
+// Persisted (Neon) history — survives restarts. ?session=&type=&run=&limit=
+adminApp.get('/log/persisted', async (req, res) => {
+  try {
+    res.json(await persistence.query({ sessionId: req.query.session, type: req.query.type, runId: req.query.run, limit: parseInt(req.query.limit) || 100 }));
+  } catch (err) {
+    res.status(503).json({ error: 'persistence_unavailable', detail: err.message });
+  }
+});
+
+// Persisted approval records (pending / approved / denied / no-op re-clicks / re-approvals)
+adminApp.get('/approvals/history', async (req, res) => {
+  try {
+    res.json(await persistence.approvals({ sessionId: req.query.session, runId: req.query.run, limit: parseInt(req.query.limit) || 100 }));
+  } catch (err) {
+    res.status(503).json({ error: 'persistence_unavailable', detail: err.message });
+  }
 });
 
 // Get all log entries
@@ -397,6 +473,9 @@ const adminServer = http.createServer(adminApp);
 const wss = new WebSocketServer({ server: adminServer });
 
 wss.on('connection', (ws) => {
+  moduleSet.dashboardBridge.handle({ type: 'ws.connected' });
+  ws.on('close', () => moduleSet.dashboardBridge.handle({ type: 'ws.closed' }));
+
   // Send last 100 log entries on connect
   const recent = log.last(100);
   ws.send(JSON.stringify({ type: 'bulk', entries: recent }));
@@ -404,7 +483,9 @@ wss.on('connection', (ws) => {
   // Subscribe to new entries
   const handler = (entry) => {
     if (ws.readyState === ws.OPEN) {
+      const t0 = process.hrtime.bigint();
       ws.send(JSON.stringify({ type: 'entry', entry }));
+      moduleSet.dashboardBridge.handle({ type: 'ws.push', latency_ms: Number(process.hrtime.bigint() - t0) / 1e6 });
     }
   };
   log.on('entry', handler);
@@ -448,6 +529,14 @@ adminServer.listen(ADMIN_PORT, () => {
   console.log(`[Admin]   listening on :${ADMIN_PORT} (WebSocket + REST)`);
   log.append('SYSTEM', 'gateway', `[SYSTEM] Admin API started on :${ADMIN_PORT}`);
 });
+
+persistence.start(log).then((r) => {
+  console.log(`[Persist] ${r.enabled ? `audit log → Neon (run ${r.runId}, ${r.ready ? 'ready' : 'connecting, will retry'})` : 'disabled (no DATABASE_URL or PERSIST_AUDIT=off)'}`);
+}).catch((err) => console.error('[Persist] start failed:', err.message));
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { persistence.stop().finally(() => process.exit(0)); });
+}
 
 process.on('uncaughtException', (err) => {
   console.error('[GATEWAY UNCAUGHT]', err);
