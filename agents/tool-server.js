@@ -133,6 +133,43 @@ function adminReq(method, path, body) {
   });
 }
 
+// ── Waiting for the Judge ─────────────────────────────────────────────────────
+// A big purchase is held by the gateway until a human decides. Over MCP the tool waits for that decision, so the
+// agent's chat continues by itself when the Judge clicks. (TrueForge allows MCP calls up to 4 minutes by default.)
+const APPROVAL_WAIT_MS = Number(process.env.APPROVAL_WAIT_MS) || 120000;
+const APPROVAL_POLL_MS = Number(process.env.APPROVAL_POLL_MS) || 1000;
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll the gateway until the approval is no longer pending, or the wait runs out. Returns the last lookup. */
+async function waitForDecision(hash, waitMs = APPROVAL_WAIT_MS) {
+  const end = Date.now() + waitMs;
+  let last = { status: 'pending' };
+  while (true) {
+    try {
+      const r = await adminReq('GET', `/approvals/${hash}`);
+      last = r.status === 404 ? { status: 'unknown' } : (r.body && r.body.status ? r.body : last);
+    } catch (_) { /* gateway hiccup: keep waiting */ }
+    if (last.status !== 'pending' || Date.now() >= end) return last;
+    await sleepMs(Math.min(APPROVAL_POLL_MS, Math.max(50, end - Date.now())));
+  }
+}
+
+/** Plain-words outcome of an approval lookup, for the agent. */
+function describeDecision(hash, d) {
+  if (d.status === 'approved') {
+    const r = d.result || {};
+    if (d.action === 'WALLET_CHECKOUT') {
+      return r.allowed
+        ? `✅ The Judge approved. Purchase executed.\nOrder ID: ${r.orderId}\nWallet remaining: ${fmt(r.walletRemaining)}`
+        : `⚠️ The Judge approved, but the purchase did not go through: ${r.reason || 'refused by the gateway'}.`;
+    }
+    return `✅ The Judge approved: ${d.action}.`;
+  }
+  if (d.status === 'denied') return `🚫 The Judge refused. The purchase was cancelled.\nApproval hash: ${hash}`;
+  if (d.status === 'unknown') return `⌛ That approval no longer exists (the session's risk changed, so it needs a fresh one). Try the purchase again.\nApproval hash: ${hash}`;
+  return `⏸️ Still waiting for the Judge.\nApproval hash: ${hash}\nCall check_approval with this hash later to see the decision.`;
+}
+
 // Wrap tool handler with stats tracking
 function tracked(toolName, fn) {
   return async (args) => {
@@ -181,7 +218,7 @@ function defineTool(name, description, schema, handler) {
 // Stateless MCP: a fresh server per request, so any number of clients (e.g. the TrueForge harness) can connect.
 function buildMcpServer() {
   const server = new McpServer({ name: 'agent-quarantine-tools', version: '1.0.0' });
-  for (const d of toolDefs) server.tool(d.name, d.description, d.schema, d.wrapped);
+  for (const d of toolDefs) server.tool(d.name, d.description, d.schema, (args) => d.wrapped({ ...args, __mcp: true }));
   return server;
 }
 
@@ -263,8 +300,9 @@ defineTool(
     session_id: z.string().optional(),
     signature: z.string().optional(),
     reason: z.string().optional().describe('Agent justification (treated as untrusted by gateway and logged)'),
+    wait_for_approval: z.boolean().optional().describe('If the purchase needs a human, wait for their decision and report it. Default: true'),
   },
-  async ({ product_id, amount, item, qty, session_id, signature, reason }) => {
+  async ({ product_id, amount, item, qty, session_id, signature, reason, wait_for_approval, __mcp }) => {
     const headers = signature ? { 'x-agent-signature': signature } : {};
     const body = { productId: product_id, amount, item, qty };
     if (reason) body.reason = reason;
@@ -273,7 +311,19 @@ defineTool(
     if (result.status === 200 && result.body && result.body.status === 'success') {
       text = `✅ Checkout succeeded!\nOrder ID: ${result.body.orderId}\nWallet remaining: ${fmt(result.body.walletRemaining)}\nSandboxed: ${result.body.sandbox ? 'YES (quarantine)' : 'NO (real)'}`;
     } else if (result.status === 202) {
-      text = `⏸️ Approval required — human must approve before purchase executes.\nApproval hash: ${result.body && result.body.approvalHash}\nReason: ${result.body && result.body.reason}`;
+      const hash = result.body && result.body.approvalHash;
+      const wait = wait_for_approval === undefined ? __mcp === true : wait_for_approval; // MCP waits by default; /call does not
+      if (wait && hash) {
+        const decision = await waitForDecision(hash);
+        return {
+          content: [{ type: 'text', text: `⏸️ A human must approve this purchase (${(result.body && result.body.reason) || 'over the limit'}).\n${describeDecision(hash, decision)}` }],
+          status: result.status, body: result.body, requiresApproval: decision.status === 'pending',
+          allowed: decision.status === 'approved' && !!(decision.result && decision.result.allowed),
+          approvalStatus: decision.status, approvalHash: hash, orderId: decision.result && decision.result.orderId,
+          reason: result.body && result.body.reason,
+        };
+      }
+      text = `⏸️ Approval required — human must approve before purchase executes.\nApproval hash: ${hash}\nReason: ${result.body && result.body.reason}\nCall check_approval with this hash to see the decision.`;
     } else if (result.status === 402) {
       text = `❌ Purchase denied by wallet firewall.\nReason: ${result.body && result.body.reason}`;
     } else if (result.status === 403) {
@@ -294,6 +344,27 @@ defineTool(
       orderId: result.body && result.body.orderId,
       approvalHash: result.body && result.body.approvalHash,
       reason: result.body && result.body.reason,
+    };
+  }
+);
+
+defineTool(
+  'check_approval',
+  'Look up what happened to a purchase (or other action) that was waiting for human approval. Pass the approval hash. Reports pending, approved, refused, or expired.',
+  {
+    hash: z.string().describe('Approval hash (16 lowercase hex characters) returned by checkout'),
+    wait_seconds: z.number().min(0).max(110).optional().describe('Wait up to this many seconds for a decision before answering. Default: 0'),
+  },
+  async ({ hash, wait_seconds }) => {
+    if (!/^[a-f0-9]{16}$/.test(hash)) {
+      return { content: [{ type: 'text', text: '❌ Invalid hash: expected exactly 16 lowercase hex characters.' }], isError: true };
+    }
+    const decision = await waitForDecision(hash, Math.round((wait_seconds || 0) * 1000));
+    return {
+      content: [{ type: 'text', text: describeDecision(hash, decision) }],
+      approvalStatus: decision.status, approvalHash: hash, ok: true,
+      allowed: decision.status === 'approved' && !!(decision.result && decision.result.allowed),
+      orderId: decision.result && decision.result.orderId,
     };
   }
 );
@@ -504,6 +575,8 @@ process.on('uncaughtException', (err) => {
 module.exports = {
   name: 'tool-server',
   toolHandlers,
+  waitForDecision,
+  describeDecision,
   stats: () => ({
     name: 'tool-server',
     health: 'ok',

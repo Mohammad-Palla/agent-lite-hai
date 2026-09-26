@@ -65,6 +65,17 @@ function applyApproval(hash, actFn) {
     return { ok: false, reason: 'approval_not_found', hash };
   }
 
+  // The session must still exist. sessions.get() would silently create a blank one (risk 0), which then
+  // "drifts" from the risk the Judge was shown and throws the approval away with no explanation. Fail closed instead.
+  if (!sessions.has(pending.sessionId)) {
+    log.append('REVALIDATION_REQUIRED', pending.sessionId,
+      `[REVALIDATION] session-${pending.sessionId} is no longer in memory — approval cancelled (nothing was executed)`,
+      { hash, reason: 'session_expired' }
+    );
+    _pending.delete(hash);
+    return { ok: false, reason: 'session_expired', hash };
+  }
+
   // Re-validate session state (hardening rule #3)
   const session = sessions.get(pending.sessionId);
   const scoreDrift = Math.abs(session.riskScore - pending.riskSnapshot.score);
@@ -103,7 +114,7 @@ function applyApproval(hash, actFn) {
 /**
  * Deny a pending approval (human clicked DENY).
  */
-function denyApproval(hash) {
+function denyApproval(hash, by = 'human-1', why = '') {
   const pending = _pending.get(hash);
   if (!pending) return { ok: false, reason: 'not_found' };
 
@@ -112,7 +123,7 @@ function denyApproval(hash) {
   _applied.set(hash, { ...pending, result: 'denied', appliedAt: Date.now() });
 
   log.append('DENIED', pending.sessionId,
-    `[DENIED] by human-1 @ ${new Date().toISOString().slice(11, 19)} action=${pending.action} hash=${hash}`,
+    `[DENIED] by ${by} @ ${new Date().toISOString().slice(11, 19)} action=${pending.action} hash=${hash}${why ? ` (${why})` : ''}`,
     { hash }
   );
 

@@ -260,3 +260,33 @@ test('currency: rupees with Indian digit grouping, and limits that keep the 3x a
   assert.ok(c.WALLET_DAILY_LIMIT > c.WALLET_TX_LIMIT, 'daily cap must exceed the per-transaction limit');
   assert.ok(c.WALLET_TX_LIMIT * 3 < 100000, 'the ₹1,00,000 package must sit above the 3x auto-deny threshold');
 });
+
+test('approval engine: a missing session is refused with a reason, never replaced by a blank one', () => {
+  const sessions = require('../gateway/session-store');
+  const approval = require('../gateway/approval-engine');
+  const id = 'unit-gone-session';
+  sessions.get(id).riskScore = 0.95;
+  const { hash } = approval.createApproval(id, 'WALLET_CHECKOUT', { amount: 7000, item: 'x' }, { score: 0.95, reasons: [], route: 'QUARANTINE' });
+  sessions.delete(id); // what the idle purge used to do to a session with a decision still waiting
+  let ran = false;
+  const r = approval.applyApproval(hash, () => { ran = true; return {}; });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'session_expired');
+  assert.equal(ran, false, 'nothing may execute');
+  assert.equal(sessions.has(id), false, 'no blank session was invented (it used to be recreated with risk 0)');
+  assert.equal(approval.getPending(hash), undefined);
+});
+
+test('approval engine: deny can name a non-human actor and a reason', () => {
+  const sessions = require('../gateway/session-store');
+  const approval = require('../gateway/approval-engine');
+  const log = require('../gateway/audit-log');
+  const id = 'unit-policy-deny';
+  sessions.get(id);
+  const { hash } = approval.createApproval(id, 'WALLET_CHECKOUT', { amount: 1 }, { score: 0, reasons: [], route: 'ALLOW' });
+  assert.equal(approval.denyApproval(hash, 'policy', 'session blocked').ok, true);
+  const line = log.query({ sessionId: id, types: ['DENIED'] }).pop().message;
+  assert.match(line, /by policy/);
+  assert.match(line, /session blocked/);
+  assert.equal(approval.getApplied(hash).result, 'denied');
+});

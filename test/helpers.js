@@ -55,6 +55,8 @@ async function startStack(extraEnv = {}, { withToolServer = false } = {}) {
     PERSIST_AUDIT: 'off', DATABASE_URL: '',
     JUDGE_PROVIDER: 'jev', JUDGE_FALLBACK: 'none', TYPESAFE_API_KEY: '', // provider fails fast with no network
     AGENT_SIGNING_KEY: SIGNING_KEY,
+    SESSION_IDLE_MS: '1500', SESSION_PURGE_MS: '2500', // fast idle sweep (it only runs while a dashboard socket is connected)
+    APPROVAL_WAIT_MS: '4000', APPROVAL_POLL_MS: '100', // tool-server waits for the Judge: short in tests
     ...extraEnv,
   };
   const procs = [];

@@ -926,6 +926,19 @@ const ADMIN_API = 'http://localhost:3002';
 const WS_URL = 'ws://localhost:3002';
 
 // All money is in Indian rupees. 100000 -> ₹1,00,000
+// Plain-words reasons a Judge's approve/deny could not be applied (reasons come from the gateway's approval engine)
+function explainApprovalFailure(d) {
+  const why = d && (d.reason || d.error);
+  const map = {
+    state_changed_reapproval_required: 'the situation changed since this was shown (the threat level moved), so it was cancelled and nothing ran. A new request appears if it is still needed.',
+    session_expired: 'that suspect is no longer in the precinct, so the request was cancelled and nothing ran.',
+    approval_not_found: 'it was already handled (or never existed).',
+    already_denied: 'it was already refused.',
+    action_threw: 'the action failed when it ran. Nothing changed.',
+  };
+  return map[why] || `${why || 'unknown reason'}.`;
+}
+
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 // ─── The Precinct: every visible name lives here ───
@@ -1121,6 +1134,14 @@ async function respondApproval(decision) {
   try {
     const res = await fetch(`${ADMIN_API}/${endpoint}/${hash}`, { method: 'POST' });
     const data = await res.json();
+    if (!data.idempotent && (data.ok === false || res.status >= 400)) {
+      // The Judge's click did nothing: say why, instead of closing the pop-up in silence.
+      appendLog({
+        type: 'SYSTEM',
+        message: `[JUDGE] That signature was not applied: ${explainApprovalFailure(data)}`,
+        ts: new Date().toISOString()
+      }, true);
+    }
     if (data.idempotent) {
       appendLog({
         type: 'IDEMPOTENCY_GUARD',

@@ -6,10 +6,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startStack, gateway, admin, sign, sleep, waitFor, HUMAN_HEADERS } = require('./helpers');
+const { startStack, gateway, admin, request, sign, sleep, waitFor, HUMAN_HEADERS, PORTS } = require('./helpers');
 
 let stack;
-test.before(async () => { stack = await startStack(); });
+test.before(async () => { stack = await startStack({}, { withToolServer: true }); });
 test.after(async () => { if (stack) await stack.stop(); });
 
 const session = async (id) => (await admin('GET', '/sessions')).json.find(s => s.id === id);
@@ -116,6 +116,127 @@ test('wallet: over-limit needs a human; approve executes once; a denied approval
   assert.equal((await session(id)).walletDailyUsed, 11000);
 });
 
+// ─── Following the Judge: the tool server waits for the human, so an agent's chat continues by itself ───
+const tool = (name, body) => request(PORTS.tool, 'POST', `/call/${name}`, {}, body);
+const pendingHashFor = async (id) => (await admin('GET', '/approvals')).json.filter(a => a.sessionId === id && a.action === 'WALLET_CHECKOUT').pop();
+
+test('approval lookup: pending, approved, denied and unknown are all reported', async () => {
+  const id = 'e2e-lookup';
+  await humanBrowse(id);
+  const r = await gateway('POST', '/checkout', shop(id), { amount: 11000, item: 'group booking' });
+  assert.equal(r.status, 202);
+  const h = r.json.approvalHash;
+  const pending = (await admin('GET', `/approvals/${h}`)).json;
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.actionData.amount, 11000);
+  await admin('POST', `/approve/${h}`);
+  const done = (await admin('GET', `/approvals/${h}`)).json;
+  assert.equal(done.status, 'approved');
+  assert.equal(done.result.allowed, true);
+
+  const r2 = await gateway('POST', '/checkout', shop(id), { amount: 3800, item: 'x' });   // daily cap is ₹12,500: held again
+  await admin('POST', `/deny/${r2.json.approvalHash}`);
+  assert.equal((await admin('GET', `/approvals/${r2.json.approvalHash}`)).json.status, 'denied');
+  const missing = await admin('GET', '/approvals/0123456789abcdef');
+  assert.equal(missing.status, 404);
+  assert.equal(missing.json.status, 'unknown');
+});
+
+test('checkout waits for the Judge: approve continues the chat with the order', async () => {
+  const id = 'e2e-wait-approve';
+  await humanBrowse(id);
+  const call = tool('checkout', { product_id: '1002', amount: 7000, item: 'Limited Sneaker (Pair)', session_id: id, wait_for_approval: true });
+  const hash = await waitFor(async () => (await pendingHashFor(id))?.hash, { timeout: 5000 });
+  await sleep(300);
+  await admin('POST', `/approve/${hash}`);                                                   // the Judge clicks Approve
+  const r = await call;
+  assert.equal(r.json.approvalStatus, 'approved');
+  assert.equal(r.json.allowed, true);
+  assert.match(r.json.content[0].text, /The Judge approved/);
+  assert.ok(r.json.orderId, 'the order id is passed back to the agent');
+});
+
+test('checkout waits for the Judge: deny ends it with a refusal', async () => {
+  const id = 'e2e-wait-deny';
+  await humanBrowse(id);
+  const call = tool('checkout', { product_id: '1002', amount: 7000, item: 'Limited Sneaker (Pair)', session_id: id, wait_for_approval: true });
+  const hash = await waitFor(async () => (await pendingHashFor(id))?.hash, { timeout: 5000 });
+  await admin('POST', `/deny/${hash}`);
+  const r = await call;
+  assert.equal(r.json.approvalStatus, 'denied');
+  assert.equal(r.json.allowed, false);
+  assert.match(r.json.content[0].text, /The Judge refused/);
+  assert.equal((await session(id)).walletDailyUsed, 0, 'nothing was charged');
+});
+
+test('checkout waits for the Judge: with no decision it gives up cleanly, and check_approval catches up later', async () => {
+  const id = 'e2e-wait-timeout';
+  await humanBrowse(id);
+  const t0 = Date.now();
+  const r = await tool('checkout', { product_id: '1002', amount: 7000, item: 'Limited Sneaker (Pair)', session_id: id, wait_for_approval: true });
+  assert.ok(Date.now() - t0 >= 3500, 'it really waited (test wait is 4 s)');
+  assert.equal(r.json.approvalStatus, 'pending');
+  assert.match(r.json.content[0].text, /Still waiting for the Judge/);
+  const hash = r.json.approvalHash;
+
+  const before = await tool('check_approval', { hash });
+  assert.equal(before.json.approvalStatus, 'pending');
+  await admin('POST', `/approve/${hash}`);                                                    // decided after the wait ended
+  const after = await tool('check_approval', { hash });
+  assert.equal(after.json.approvalStatus, 'approved');
+  assert.match(after.json.content[0].text, /Purchase executed/);
+  assert.equal((await tool('check_approval', { hash: 'nothex' })).json.isError, true);
+});
+
+test('checkout over the plain /call API never waits by default (scripted agents must not hang)', async () => {
+  const id = 'e2e-nowait';
+  await humanBrowse(id);
+  const t0 = Date.now();
+  const r = await tool('checkout', { product_id: '1002', amount: 7000, item: 'Limited Sneaker (Pair)', session_id: id });
+  assert.ok(Date.now() - t0 < 2500, 'returned straight away');
+  assert.equal(r.json.requiresApproval, true);
+  assert.match(r.json.content[0].text, /check_approval/);
+});
+
+// ─── The pile-up bug: a Judge who is slower than the idle timeout used to find every approval "expired" ───
+test('a session with a decision waiting is not purged, so a slow Judge can still approve it', async () => {
+  const WebSocket = require('ws');
+  const ws = new WebSocket(`ws://localhost:${PORTS.admin}`);            // the idle sweep runs while a dashboard is connected
+  await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); });
+  try {
+    const id = 'e2e-slow-judge';
+    await humanBrowse(id);
+    const r = await gateway('POST', '/checkout', shop(id), { amount: 7000, item: 'Limited Sneaker (Pair)' });
+    assert.equal(r.status, 202);
+    await sleep(4500);                                                  // well past the 2.5 s purge threshold used in tests
+    assert.ok(await session(id), 'the session must still be in memory while its approval is pending');
+    const ok = await admin('POST', `/approve/${r.json.approvalHash}`);
+    assert.equal(ok.json.ok, true, JSON.stringify(ok.json));
+    assert.equal(ok.json.result.allowed, true);
+    assert.equal((await session(id)).walletDailyUsed, 7000);
+    await waitFor(async () => !(await session(id)), { timeout: 8000 });  // once decided it is purged like any idle session
+  } finally { ws.close(); }
+});
+
+test('signing an arrest closes the suspect\'s other held payments (no pile for the Judge)', async () => {
+  const id = 'e2e-pile';
+  for (let round = 0; round < 3; round++) {
+    await Promise.all(Array.from({ length: 5 }, () => gateway('POST', '/checkout', { 'x-session-id': id }, { amount: 7000, item: 'vip ticket' })));
+  }
+  const held = (await admin('GET', '/approvals')).json.filter(a => a.sessionId === id);
+  const payments = held.filter(a => a.action === 'WALLET_CHECKOUT');
+  const block = held.find(a => a.action === 'BLOCK_SESSION');
+  assert.ok(payments.length >= 5, `expected a pile of held payments, got ${payments.length}`);
+  assert.ok(block, 'the arrest is proposed');
+  await admin('POST', `/approve/${block.hash}`);
+  const left = (await admin('GET', '/approvals')).json.filter(a => a.sessionId === id);
+  assert.equal(left.length, 0, `nothing should be left waiting for the Judge, but ${left.length} are`);
+  const first = (await admin('GET', `/approvals/${payments[0].hash}`)).json;
+  assert.equal(first.status, 'denied');
+  const closed = (await admin('GET', '/log/all')).json.filter(e => e.sessionId === id && e.type === 'DENIED' && /by policy/.test(e.message));
+  assert.equal(closed.length, payments.length, 'each was refused by policy, not by "human-1"');
+});
+
 test('signed agent: tier 1, burst does not raise risk, wallet limits still apply', async () => {
   const id = 'e2e-signed';
   const h = () => ({ 'x-session-id': id, ...sign(id) });
@@ -180,7 +301,11 @@ test('judgment: with no provider available it falls back to the deterministic sc
   assert.ok((j.counters.calls || 0) > 0, 'judgment should have been attempted');
   assert.ok((j.counters.fallbacks || 0) > 0, 'and fallen back');
   assert.equal(j.counters.served_by_jev || 0, 0);
-  assert.equal((await session('e2e-legit')).route, 'ALLOW');
+  const id = 'e2e-judge-fallback';                                        // a fresh session: earlier ones may have been swept as idle
+  await humanBrowse(id);
+  const c = await gateway('POST', '/checkout', shop(id), { amount: 2400, item: 'Office Chair Pro' });
+  assert.equal(c.status, 200, 'the shop keeps working with the judge down');
+  assert.equal((await session(id)).route, 'ALLOW');
 });
 
 test('fault switch: a module can be taken down and restored', async () => {

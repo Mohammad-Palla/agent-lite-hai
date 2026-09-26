@@ -30,6 +30,7 @@ Nothing is strictly required. With no keys at all the gateway runs on its determ
 | `AGENT_SIGNING_KEY` | shared secret for signed agents (tier 1) | a demo key from source; set your own |
 | `GATEWAY_PORT`, `ADMIN_PORT`, `UI_PORT` | move services off busy ports | 3001, 3002, 3005 |
 | `CLASSIFIER_KEY` | classifier.dev provider (`JUDGE_PROVIDER=classifier`) | needs a funded key, see troubleshooting |
+| `APPROVAL_WAIT_MS` | How long an MCP `checkout` waits for the Judge before saying it is still waiting | 120000 (2 minutes) |
 | `OPENAI_JUDGE_MODEL`, `OPENAI_REASONING_EFFORT`, `JUDGE_BUDGET_MS` | tuning | `gpt-6-luna`, `none`, per-provider budgets |
 
 ## 3. Ports
@@ -128,8 +129,8 @@ Three layers. Run the first two often; run the third before a demo.
 | Command | Layer | Needs | Time | Tests |
 |---|---|---|---|---|
 | `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 15 |
-| `npm run test:e2e` | boots storefront + gateway on ports 13001/13002, plays the scenarios over HTTP | ports 13001, 13002, 3003, 3004 free | about 15 s | 14 |
-| `npm test` | unit + e2e | as above | about 15 s | 29 |
+| `npm run test:e2e` | boots storefront, gateway and tool server on ports 13001/13002/13007, plays the scenarios over HTTP | ports 13001, 13002, 13007, 3003, 3004 free | about 25 s | 19 |
+| `npm test` | unit + e2e | as above | about 25 s | 35 |
 | `npm run test:live` | your real jev, OpenAI, Neon, tool server and LLM agents | keys in `.env`, port 13007 free | 3 to 6 min | 11 |
 | `npm run test:judges` | jev vs OpenAI on 10 labelled sessions, prints a comparison table | both keys | about 1 min | (report) |
 
@@ -160,6 +161,7 @@ They write a few rows to Neon and delete them again.
 - Signed agent: tier 1, fast burst stays allowed, wallet still applies. Forged, replayed and stale signatures are tier 5
 - Bare script is tier 5, browser-like session is not
 - Bad session ids and hashes, the beacon, event feed, fault switch, per-IP rate limit
+- The Judge's decision reaches the agent: approve, deny, timeout and the `check_approval` lookup, plus the plain HTTP API never waiting
 
 **Live** (`test/live.test.js`)
 - jev and OpenAI each judge a human, a scalper and an injection correctly
@@ -188,6 +190,7 @@ Then open http://localhost:8790, pick an agent (`undercover-crook`, `smooth-talk
 - **Where to monitor:** the TrueForge UI (port 8790) shows the agent's steps, tool calls and answers per session. The dashboard (3005) shows the gateway's view of the same traffic: risk, route, approvals. The API lists sessions at `http://localhost:8790/api/v1/sessions`.
 - **The localhost allowlist:** by default the harness refuses to call `localhost` ("Outbound URL blocked"). `npm run trueforge` sets `OUTBOUND_URL_ALLOWED_HOSTS='["localhost","127.0.0.1"]'`, which allows only those two hosts.
 - **Human gate inside TrueForge:** the `good-cop` agent's `apply_policy` tool requires approval in TrueForge, so a person must click before the defender can approve or deny anything. This closes known issue 1 for the TrueForge-run Good Cop. The standalone `npm run agents:defender` script has no such gate.
+- **The chat follows the Judge:** when a TrueForge agent tries a purchase over the limit, the gateway holds it and the agent's `checkout` tool **waits** for the Judge (the human) to click Approve or Deny on the dashboard. The chat then continues by itself with the outcome: "Purchase approved and completed, Order ID …" or "The Judge refused". If nobody decides within the wait (default 2 minutes, `APPROVAL_WAIT_MS`), the agent says it is still waiting and can use the `check_approval` tool later, which reports pending, approved, refused or expired. Waiting applies only to calls over MCP (TrueForge). The plain `/call/checkout` HTTP API used by the scripted agents returns straight away, so they never hang. The gateway exposes the same lookup as `GET /approvals/<hash>` on the admin port. TrueForge allows an MCP call to run for 4 minutes by default, so keep `APPROVAL_WAIT_MS` under 240000.
 - **No sandbox locally:** TrueForge's code sandbox needs `bubblewrap`, `socat` and `ripgrep`. Without `socat` and `ripgrep` the sandbox is unavailable, so skills that need one cannot run. The agents here use plain instructions instead.
 - **No login:** TrueForge runs with auth disabled. Do not expose port 8790 to the internet: anyone with the link could run agents on your OpenAI key and drive the shop.
 

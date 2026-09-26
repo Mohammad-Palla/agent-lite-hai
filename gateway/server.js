@@ -379,6 +379,22 @@ adminApp.get('/sessions', (req, res) => {
   })));
 });
 
+// One approval by hash: pending, approved, denied, or unknown (never existed, or expired because the risk changed).
+// Lets agents follow what the Judge decided instead of guessing.
+adminApp.get('/approvals/:hash([a-f0-9]{16})', (req, res) => {
+  const { hash } = req.params;
+  const pending = approval.getPending(hash);
+  if (pending) {
+    return res.json({ status: 'pending', hash, action: pending.action, sessionId: pending.sessionId, actionData: pending.actionData, since: pending.ts });
+  }
+  if (approval.isApplied(hash)) {
+    const done = approval.getApplied(hash);
+    if (done.result === 'denied') return res.json({ status: 'denied', hash, action: done.action, sessionId: done.sessionId });
+    return res.json({ status: 'approved', hash, action: done.action, sessionId: done.sessionId, result: done.result });
+  }
+  res.status(404).json({ status: 'unknown', hash, message: 'no such approval, or it expired because the session risk changed and needs a fresh one' });
+});
+
 // Get pending approvals
 adminApp.get('/approvals', (req, res) => {
   res.json(approval.getAllPending());
@@ -534,6 +550,11 @@ function applyBlockRule(pending) {
     { sessionId, durationMin: pending.actionData.durationMin }
   );
 
+  // The door is shut, so the suspect's other held payments are moot: close them instead of leaving a pile for the Judge.
+  const moot = approval.getAllPending().filter((a) => a.sessionId === sessionId && a.action === 'WALLET_CHECKOUT');
+  for (const a of moot) approval.denyApproval(a.hash, 'policy', 'session blocked');
+  if (moot.length) log.append('SYSTEM', sessionId, `[POLICY] session-${sessionId} blocked: ${moot.length} other held payment(s) closed automatically`, { closed: moot.map((a) => a.hash) });
+
   // Verify: simulate a request from that session and confirm 403
   setImmediate(() => verifyBlock(sessionId));
 
@@ -600,17 +621,24 @@ wss.on('connection', (ws) => {
 
   // Send session state every 500ms. Inactive sessions idle for >15s are marked
   // 'completed' (fallback GC); explicit completion is handled via /session/complete.
-  const SESSION_IDLE_MS    = 15_000;  // mark completed after 15s idle fallback
-  const SESSION_PURGE_MS   = 25_000;  // delete from store after 25s idle
+  const SESSION_IDLE_MS    = Number(process.env.SESSION_IDLE_MS) || 15_000;   // mark completed after 15s idle fallback
+  const SESSION_PURGE_MS   = Number(process.env.SESSION_PURGE_MS) || 25_000;  // delete from store after 25s idle
 
   const sessionInterval = setInterval(() => {
     if (ws.readyState !== ws.OPEN) return;
     const now = Date.now();
     const all = sessions.all();
     const visible = [];
+    // A session with a human decision still waiting must stay in memory: approving re-checks its risk, and a purged
+    // session would make every pending approval fail as "state changed". It becomes purgeable once decided.
+    const awaitingJudge = new Set(approval.getAllPending().map((p) => p.sessionId));
 
     for (const s of all) {
       const idle = now - (s.lastActivityTs || s.createdAt);
+      if (awaitingJudge.has(s.id)) {
+        s.lastActivityTs = now; // the wait is not idleness
+        if (s.status === 'completed') { s.status = 'active'; s.completedAt = null; }
+      }
 
       // Purge sessions that have been idle for >25s
       if (idle > SESSION_PURGE_MS) {
