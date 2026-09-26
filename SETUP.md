@@ -130,15 +130,38 @@ The good cop / bad cop story: Good Cop keeps a suspect talking in the Interrogat
 
 Rows already saved in Neon before the change are in dollars, and old TrueForge chats still show dollars.
 
+## 5b. The Scoreboard: how many were caught, and every decision
+
+Open **http://localhost:3005/scoreboard.html** (there is a "📊 SCOREBOARD" button in the dashboard header). It refreshes every 3 seconds.
+
+| Section | What it shows |
+|---|---|
+| Headline tiles | Visitors, **caught**, cleared, arrests signed, sweet talk ignored, money kept safe |
+| Every decision | Cleared, held for questioning, arrest proposed, door slammed, as bars and percentages |
+| Money | Sales that went through, payments held for the Judge, refused outright, approved and refused by the Judge, closed automatically after an arrest, and the total kept safe |
+| What happened when | A stacked timeline: sales, held payments, refusals, catches |
+| The Judge | Decisions asked, signed, refused, closed by policy, cancelled as stale, second clicks ignored, average time to decide |
+| Who is who | Trust tiers from the ID check, and the second opinion (which model answered, how often it raised the threat level, injections flagged) |
+| By character | For each kind of visitor: how many, caught, cleared, spent, refused |
+| Latest cases | The 25 most recent visitors with their verdict, threat level and money |
+
+Two words matter: a **visitor** is a distinct session that made at least one request, and it counts as **caught** if at any point it was worse than cleared (held for questioning, arrest proposed or blocked). Each visitor is counted once, by the worst thing that happened to them. "Money kept safe" is what was refused outright, refused by the Judge or closed automatically after an arrest. Nothing counts as safe while it is only waiting.
+
+The **THIS RUN / ALL TIME** switch chooses the source. This run reads the gateway's memory and resets when the gateway restarts. All time reads every run saved to the Neon database, so it needs `DATABASE_URL`. Without it the page says so.
+
+Rows saved to Neon before the switch to rupees are in dollars, so the all-time money totals mix the two.
+
+The same numbers are available as JSON: `GET http://localhost:3002/analytics?range=live` (or `range=all`).
+
 ## 6. Test
 
 Three layers. Run the first two often; run the third before a demo.
 
 | Command | Layer | Needs | Time | Tests |
 |---|---|---|---|---|
-| `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 19 |
-| `npm run test:e2e` | boots storefront, gateway and tool server on ports 13001/13002/13007, plays the scenarios over HTTP | ports 13001, 13002, 13007, 3003, 3004 free | about 50 s | 23 |
-| `npm test` | unit + e2e | as above | about 55 s | 42 |
+| `npm run test:unit` | pure logic, no ports, no network | nothing | under 1 s | 23 |
+| `npm run test:e2e` | boots storefront, gateway and tool server on ports 13001/13002/13007, plays the scenarios over HTTP | ports 13001, 13002, 13007, 3003, 3004 free | about 60 s | 25 |
+| `npm test` | unit + e2e | as above | about 65 s | 48 |
 | `npm run test:live` | your real jev, OpenAI, Neon, tool server and LLM agents | keys in `.env`, port 13007 free | 3 to 6 min | 11 |
 | `npm run test:judges` | jev vs OpenAI on 10 labelled sessions, prints a comparison table | both keys | about 1 min | (report) |
 
@@ -170,6 +193,7 @@ They write a few rows to Neon and delete them again.
 - Bare script is tier 5, browser-like session is not
 - Bad session ids and hashes, the beacon, event feed, fault switch, per-IP rate limit
 - The Judge's decision reaches the agent: approve, deny, timeout and the `check_approval` lookup, plus the plain HTTP API never waiting
+- The Scoreboard numbers match what the scenarios did and the Case Book they come from; the page renders real-shaped data
 
 **Live** (`test/live.test.js`)
 - jev and OpenAI each judge a human, a scalper and an injection correctly
