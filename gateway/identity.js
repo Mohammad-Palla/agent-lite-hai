@@ -3,7 +3,7 @@
  * Identity classifier logic — plain functions, no module imports.
  *
  * Tiers (lower = stronger identity evidence):
- *   1 signature         valid signed-agent proof (verification lands in the 5.5–6.5h task)
+ *   1 signature         valid signed-agent proof (gateway/signature.js verdict)
  *   2 network-verified  declared known bot AND reverse-DNS/forward-confirm matches its operator
  *   3 declared bot      declares itself (UA or x-agent-type) but no network match
  *   4 behavioural       undeclared, no JS beacon, machine-regular timing, no referrer
@@ -81,6 +81,13 @@ function classifySignals(sig) {
   const evidence = [];
   const bot = knownBot(sig.ua);
 
+  // Cryptographic proof outranks everything. A bad signature is an impersonation attempt, not just "unknown".
+  if (sig.signature && sig.signature.valid) {
+    return { tier: 1, label: 'signed_agent', confidence: 0.98, evidence: [`signature_valid:${sig.signature.pubkeyId}`], verified: true };
+  }
+  if (sig.signature && !sig.signature.valid) {
+    return { tier: 5, label: 'spoofed_signature', confidence: 0.95, evidence: [`signature_invalid:${sig.signature.reason}`] };
+  }
   if (sig.signature_present) evidence.push('signature_header_present_unverified');
 
   if (bot) {

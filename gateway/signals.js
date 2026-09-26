@@ -72,7 +72,7 @@ function recordBeacon(sessionId) { sessionState(sessionId).beacon = true; }
  * Extract signals for one request. Call once per request, in arrival order.
  * @param {{headers:object, method:string, url:string}} req
  */
-function extract(sessionId, req) {
+function extract(sessionId, req, { signature = null } = {}) {
   const h = req.headers || {};
   const st = sessionState(sessionId);
   const label = pathLabel(req.url);
@@ -93,7 +93,8 @@ function extract(sessionId, req) {
     sec_fetch: h['sec-fetch-mode'] || h['sec-fetch-site'] || null,
     header_count: Object.keys(h).length,
     declared_agent: h['x-agent-type'] ? String(h['x-agent-type']).slice(0, 40) : null,
-    signature_present: !!(h['signature'] || h['signature-input']),
+    signature_present: !!(signature || h['signature'] || h['signature-input']),
+    signature, // null = none sent; else { valid, reason?, pubkeyId? } from signature.verify()
     beacon: st.beacon,
     timing: timingStats(st.times),
     path_sequence: [...st.paths],

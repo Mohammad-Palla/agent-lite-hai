@@ -71,8 +71,9 @@ const identityClassifier = defineModule({
     const result = identity.classifySignals(sig);
     st.inc(`tier_${result.tier === null ? 'human' : result.tier}`);
     if (result.tier === null) st.inc('unknown');
-    if (sig.signature_present) st.inc('signature_present');
-    if (ctx.bus) ctx.bus.publish('identity.classified', e.session_id, { ...result, verified: false }, e.trace_id);
+    if (sig.signature) st.inc(sig.signature.valid ? 'signature_pass' : 'signature_fail');
+    else if (sig.signature_present) st.inc('signature_present');
+    if (ctx.bus) ctx.bus.publish('identity.classified', e.session_id, { verified: false, ...result }, e.trace_id);
 
     // Known bot on a public IP: verify by reverse DNS, then upgrade to tier 2 asynchronously.
     const bot = identity.knownBot(sig.ua);
@@ -98,8 +99,8 @@ const identityClassifier = defineModule({
     return {
       unknown_rate: total ? +((c.unknown || 0) / total).toFixed(3) : null,
       rdns_hit_rate: c.rdns_attempts ? +((c.rdns_hits || 0) / c.rdns_attempts).toFixed(3) : null,
-      signature_pass: 0, // set when tier 1 verification lands
-      signature_fail: 0,
+      signature_pass: c.signature_pass || 0,
+      signature_fail: c.signature_fail || 0,
     };
   },
 });

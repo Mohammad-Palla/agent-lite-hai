@@ -36,16 +36,29 @@ const bus = require('./bus');
 const registry = require('./registry');
 const auditBridge = require('./audit-bridge');
 const signals = require('./signals');
+const signature = require('./signature');
 const router = require('./router');
 const persistence = require('./persistence');
 const moduleSet = require('./modules');
+
+// The UI reads session.identityTier / identityLabel; the identity classifier is the single source of truth.
+bus.subscribe('identity.classified', (e) => {
+  if (!sessions.has(e.session_id)) return;
+  const sess = sessions.get(e.session_id);
+  if (e.payload.verified || !sess.identityVerified) {
+    sess.identityTier = e.payload.tier ?? 4; // "human_like" has no tier; the UI shows it with the behavioural default
+    sess.identityLabel = e.payload.label;
+    sess.identityVerified = !!e.payload.verified;
+    sess.signatureValid = e.payload.tier === 1 ? true : (e.payload.label === 'spoofed_signature' ? false : sess.signatureValid);
+  }
+});
 
 // Register contract modules and start translating audit entries into bus events
 for (const [mod, state] of moduleSet.all) registry.register(mod, { state });
 auditBridge.start();
 
-const GATEWAY_PORT = 3001;
-const ADMIN_PORT = 3002;
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 3001;
+const ADMIN_PORT = Number(process.env.ADMIN_PORT) || 3002;
 const STOREFRONT_HOST = 'localhost';
 const STOREFRONT_REAL_PORT = 3003;
 const STOREFRONT_SANDBOX_PORT = 3004;
@@ -175,7 +188,9 @@ gatewayApp.use((req, res) => {
   }
 
   const session = sessions.recordRequest(sessionId, req.method, req.url);
-  const { signals: sig, present } = signals.extract(sessionId, req);
+  // Signed-agent proof (tier 1) is verified here and handed to the classifier as a signal
+  const sigCheck = signature.verify(req.headers, sessionId);
+  const { signals: sig, present } = signals.extract(sessionId, req, { signature: sigCheck });
   bus.publish('signals.extracted', sessionId, { signals: sig, present });
   if (req.headers['x-agent-type']) {
     session.agentType = req.headers['x-agent-type'];
@@ -276,7 +291,38 @@ adminApp.use(express.json({ limit: '10kb' }));
 adminApp.use(rateLimit);
 
 // Aggregated stats for every module (one card per module on the dashboard)
-adminApp.get('/stats/all', (req, res) => res.json(registry.statsAll()));
+/**
+ * Real per-module stats (`modules`, `overall`) plus the flat keys the dashboard cards read
+ * (ingress, session, signal, identity, ...), now filled from real module stats instead of the earlier mock.
+ */
+function statsWithDashboardKeys() {
+  const all = registry.statsAll();
+  const m = all.modules;
+  const cnt = (name, k) => (m[name] && m[name].counters[k]) || 0;
+  const cus = (name) => (m[name] && m[name].custom) || {};
+  const h = (name) => (m[name] ? m[name].health : 'down');
+  const live = sessions.all();
+  const tiers = { tier1: cnt('identity-classifier', 'tier_1'), tier2: cnt('identity-classifier', 'tier_2'), tier3: cnt('identity-classifier', 'tier_3'), tier4: cnt('identity-classifier', 'tier_4'), tier5: cnt('identity-classifier', 'tier_5'), human: cnt('identity-classifier', 'tier_human') };
+  const quarantined = live.filter(s => s.sandboxed || s.route === 'QUARANTINE').length;
+  const avg = live.length ? live.reduce((a, s) => a + (s.riskScore || 0), 0) / live.length : 0;
+  const pend = approval.getAllPending();
+  return {
+    ...all,
+    ingress:    { health: h('ingress'), requests: cnt('ingress', 'requests'), rejected: cnt('ingress', 'rejected'), rateLimited: cnt('ingress', 'rate_limited'), rateLimitActive: true },
+    session:    { health: h('session-tracker'), activeSessions: live.length, sessionsSeen: cus('session-tracker').sessions_seen || 0, windowMs: 10000 },
+    signal:     { health: h('signal-collector'), extractions: cnt('signal-collector', 'extractions'), signalsTracked: cnt('signal-collector', 'extractions'), missingFieldRate: cus('signal-collector').missing_field_rate },
+    identity:   { health: h('identity-classifier'), tiers, signedAgents: tiers.tier1, signaturePass: cnt('identity-classifier', 'signature_pass'), signatureFail: cnt('identity-classifier', 'signature_fail') },
+    behaviour:  { health: h('behaviour-scorer'), avgRiskScore: +avg.toFixed(2), scoredSessions: cnt('behaviour-scorer', 'scored') },
+    judgment:   { health: h('llm-behaviour-scorer'), provider: cus('llm-behaviour-scorer').primary, fallback: cus('llm-behaviour-scorer').fallback, mode: 'raise_only', calls: cnt('llm-behaviour-scorer', 'calls'), fallbacks: cnt('llm-behaviour-scorer', 'fallbacks'), providerFallbacks: cnt('llm-behaviour-scorer', 'provider_fallbacks'), injectionsFlagged: cnt('llm-behaviour-scorer', 'injections_flagged') },
+    router:     { health: h('risk-router'), routes: { allow: live.filter(s => s.route === 'ALLOW').length, quarantine: quarantined, block_proposed: live.filter(s => s.route === 'BLOCK_PROPOSED').length }, decisions: cnt('risk-router', 'scored_final') },
+    quarantine: { health: h('quarantine-store'), clonedPort: STOREFRONT_SANDBOX_PORT, sessionsQuarantined: quarantined, requestsDiverted: cnt('quarantine-store', 'requests_diverted'), realStateMutations: cnt('quarantine-store', 'real_state_mutations') },
+    wallet:     { health: h('wallet-firewall'), txLimit: 200, dailyLimit: 500, totalUsed: live.reduce((a, s) => a + (s.walletDailyUsed || 0), 0), autoDeny: cnt('wallet-firewall', 'auto_deny'), needsApproval: cnt('wallet-firewall', 'needs_approval') },
+    approval:   { health: h('approval-engine'), pending: pend.length, hashesBound: pend.map(p => p.hash) },
+    audit:      { health: h('audit-log'), totalEntries: cnt('audit-log', 'events'), persistedRows: (cus('audit-log').persistence || {}).persisted_rows || 0 },
+    dashboard:  { health: h('dashboard-bridge'), wsClients: wss ? wss.clients.size : 0 },
+  };
+}
+adminApp.get('/stats/all', (req, res) => res.json(statsWithDashboardKeys()));
 
 adminApp.get('/stats/:name', (req, res) => {
   const all = registry.statsAll();
@@ -306,12 +352,17 @@ adminApp.get('/sessions', (req, res) => {
     riskScore: s.riskScore,
     riskReasons: s.riskReasons,
     searchCount: s.searchCount,
+    compareCount: s.compareCount,
     checkoutAttempts: s.checkoutAttempts,
     walletDailyUsed: s.walletDailyUsed,
     walletDailyLimit: s.walletDailyLimit,
+    walletTxLimit: s.walletTxLimit,
     sandboxed: s.sandboxed,
     blockRuleApplied: s.blockRuleApplied,
     agentType: s.agentType,
+    identityTier: s.identityTier || 4,
+    signatureValid: !!s.signatureValid,
+    requestRate: (s.requestLog?.length || 0) / 10,
   })));
 });
 
@@ -382,6 +433,16 @@ adminApp.get('/approvals/history', async (req, res) => {
   }
 });
 
+// Append audit log entry (used by defender agent and test harness)
+adminApp.post('/log', (req, res) => {
+  const { type, sessionId, message, data } = req.body || {};
+  if (!type || !sessionId || !message) {
+    return res.status(400).json({ error: 'missing_fields' });
+  }
+  const entry = log.append(type, sessionId, message, data || {});
+  res.json({ ok: true, entry });
+});
+
 // Get all log entries
 adminApp.get('/log/all', (req, res) => {
   res.json(log.all());
@@ -391,9 +452,13 @@ adminApp.get('/log/all', (req, res) => {
 adminApp.post('/run-agent/:type', (req, res) => {
   const { type } = req.params;
   const scriptMap = {
-    legit: 'legitimate.js',
-    scalper: 'scalper.js',
-    ambiguous: 'ambiguous.js',
+    legit:           'legitimate.js',
+    scalper:         'scalper.js',
+    ambiguous:       'ambiguous.js',
+    'llm-attacker':  'llm-attacker.js',
+    'llm-inject':    'llm-attacker.js',
+    signed:          'signed-agent.js',
+    defender:        'defender-agent.js',
   };
   const scriptName = scriptMap[type];
   if (!scriptName) {
@@ -403,7 +468,11 @@ adminApp.post('/run-agent/:type', (req, res) => {
   const scriptPath = path.join(__dirname, '..', 'agents', scriptName);
   log.append('SYSTEM', 'gateway', `[LAUNCH] Spawning ${type} agent script: ${scriptName}`);
 
-  const child = fork(scriptPath, [], { stdio: 'inherit' });
+  const env = { ...process.env };
+  if (type === 'llm-inject') env.ATTACKER_MODE = 'inject';
+  if (type === 'llm-attacker') env.ATTACKER_MODE = 'normal';
+
+  const child = fork(scriptPath, [], { stdio: 'inherit', env });
   child.on('error', (err) => {
     log.append('SYSTEM', 'gateway', `[ERROR] Failed to run ${type} agent: ${err.message}`);
   });
@@ -507,7 +576,9 @@ wss.on('connection', (ws) => {
         sandboxed: s.sandboxed,
         blockRuleApplied: s.blockRuleApplied,
         agentType: s.agentType,
-        requestRate: s.requestLog.length / 10,
+        identityTier: s.identityTier || 4,
+        signatureValid: !!s.signatureValid,
+        requestRate: (s.requestLog?.length || 0) / 10,
       })) }));
     }
   }, 500);

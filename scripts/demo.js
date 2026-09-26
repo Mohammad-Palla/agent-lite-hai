@@ -131,12 +131,37 @@ async function main() {
   await sleep(1500);
 
   // ─────────────────────────────────────────────────────────────
+  // SCENARIO 4: SIGNED AGENT (TIER 1 HMAC IDENTITY)
+  // ─────────────────────────────────────────────────────────────
+  console.log('\n───────────────────────────────────────────────────────────────');
+  console.log('SCENARIO 4: SIGNED AGENT (TIER 1 IDENTITY VERIFICATION)');
+  console.log('  - Behavior: Signs every HTTP request with HMAC-SHA256 signature header');
+  console.log('  - Classification: Recognized as Tier 1 trusted identity');
+  console.log('  - Front Door: Instant ALLOW route, trusted access to real store');
+  console.log('  - Budget: Purchase $120 concert ticket within $200 wallet limit');
+  console.log('───────────────────────────────────────────────────────────────');
+  await runScript('agents/signed-agent.js');
+  await sleep(1500);
+
+  // ─────────────────────────────────────────────────────────────
+  // SCENARIO 5: AUTONOMOUS LLM ATTACKER (gpt-6-luna)
+  // ─────────────────────────────────────────────────────────────
+  console.log('\n───────────────────────────────────────────────────────────────');
+  console.log('SCENARIO 5: AUTONOMOUS LLM ATTACKER & DEFENDER (MODEL: gpt-6-luna)');
+  console.log('  - Attacker: Powered by gpt-6-luna with shopping-attacker skill');
+  console.log('  - Goal: Autonomously call store tools via MCP / gateway');
+  console.log('  - Defender: Analyzes session risk with sandboxed Python scorer & LLM');
+  console.log('───────────────────────────────────────────────────────────────');
+  await runScript('agents/llm-attacker.js');
+  await sleep(1500);
+
+  // ─────────────────────────────────────────────────────────────
   // SUMMARY AUDIT
   // ─────────────────────────────────────────────────────────────
   console.log('\n═══════════════════════════════════════════════════════════════');
   console.log('  ALL SCENARIOS COMPLETED SUCCESSFULLY!');
-  console.log('  Open http://localhost:3000 to view the retro terminal audit log');
-  console.log('  and active agent sprites in their respective zones.');
+  console.log('  Open http://localhost:3005 to view the 15-module retro dashboard,');
+  console.log('  real-time audit log, and active agent sprites in their zones.');
   console.log('═══════════════════════════════════════════════════════════════\n');
 }
 
