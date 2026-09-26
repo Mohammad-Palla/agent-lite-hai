@@ -143,6 +143,13 @@ async function query({ sessionId, type, types, runId, limit = 100 } = {}) {
 
 const approvals = (opts = {}) => query({ ...opts, types: APPROVAL_TYPES });
 
+/** The most recent `limit` entries across ALL runs, oldest first, in the same shape as the in-memory log. */
+async function history({ limit = 50000 } = {}) {
+  if (!pool || !state.ready) throw new Error('persistence_unavailable');
+  const r = await pool.query('SELECT ts, type, session_id AS "sessionId", message, meta FROM audit_log ORDER BY ts DESC LIMIT $1', [Math.min(Math.max(1, limit), 100000)]);
+  return r.rows.reverse().map((x) => ({ ...x, ts: x.ts instanceof Date ? x.ts.toISOString() : x.ts }));
+}
+
 function stats() {
   return {
     enabled: state.enabled,
@@ -157,4 +164,4 @@ function stats() {
   };
 }
 
-module.exports = { start, stop, flush, query, approvals, stats, APPROVAL_TYPES };
+module.exports = { start, stop, flush, query, approvals, history, stats, APPROVAL_TYPES };

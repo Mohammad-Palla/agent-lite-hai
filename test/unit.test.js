@@ -306,3 +306,99 @@ test('variety: seeded, replayable, and always within the rules each agent is mea
   const catalog = require('../catalog').INVENTORY;
   assert.equal(V.byId('1002').price, catalog['1002'].price, 'agents read the same catalog the shop serves');
 });
+
+// ─── Scoreboard maths ───
+function caseBook() {
+  let n = 0;
+  const T = (sec) => new Date(Date.UTC(2026, 8, 26, 10, 0, sec)).toISOString();
+  const E = (type, sessionId, meta = {}, message = '', sec = n++) => ({ ts: T(sec), type, sessionId, message, meta });
+  return [
+    E('TOOL_CALL', 'legit-1'), E('RISK', 'legit-1', { score: 0.05, route: 'ALLOW' }), E('TOOL_CALL', 'legit-1'), E('RISK', 'legit-1', { score: 0.18, route: 'ALLOW' }),
+    E('CHECKOUT_EXECUTED', 'legit-1', { amount: 3000, item: 'Concert Ticket x2' }),
+    E('TOOL_CALL', 'scalper-1'), E('RISK', 'scalper-1', { score: 0.1, route: 'ALLOW' }),
+    E('APPROVAL_PENDING', 'scalper-1', { hash: 'a1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }), E('WALLET_APPROVAL_REQUIRED', 'scalper-1', { amount: 7000, hash: 'a1' }),
+    E('SANDBOX', 'scalper-1'), E('RISK', 'scalper-1', { score: 0.5, route: 'QUARANTINE' }),
+    E('APPROVAL_PENDING', 'scalper-1', { hash: 'a2', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }), E('WALLET_APPROVAL_REQUIRED', 'scalper-1', { amount: 7000, hash: 'a2' }),
+    E('WALLET_AUTO_DENIED', 'scalper-1', { amount: 31000 }), E('RISK', 'scalper-1', { score: 0.95, route: 'BLOCK_PROPOSED' }),
+    E('BLOCK_PROPOSED', 'scalper-1', { hash: 'b1' }), E('APPROVAL_PENDING', 'scalper-1', { hash: 'b1', action: 'BLOCK_SESSION', actionData: {} }),
+    E('APPROVED', 'scalper-1', { hash: 'b1', action: 'BLOCK_SESSION' }, '[APPROVED] by human-1', 40), E('BLOCK_APPLIED', 'scalper-1', {}, '', 40), E('VERIFIED', 'scalper-1', { statusCode: 403 }, '', 41),
+    E('DENIED', 'scalper-1', { hash: 'a1' }, '[DENIED] by policy @ 10:00:41 action=WALLET_CHECKOUT (session blocked)', 41),
+    E('DENIED', 'scalper-1', { hash: 'a2' }, '[DENIED] by policy @ 10:00:41 action=WALLET_CHECKOUT (session blocked)', 41),
+    E('TOOL_CALL', 'ambiguous-1'), E('UNTRUSTED_INPUT_IGNORED', 'ambiguous-1', {}), E('WALLET_AUTO_DENIED', 'ambiguous-1', { amount: 100000 }),
+    E('APPROVAL_PENDING', 'tf-attacker-normal', { hash: 'c1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }, '', 10),
+    E('APPROVED', 'tf-attacker-normal', { hash: 'c1', action: 'WALLET_CHECKOUT', actionData: { amount: 7000 } }, '', 14),
+    E('APPROVAL_PENDING', 'tf-attacker-inject', { hash: 'd1', action: 'WALLET_CHECKOUT', actionData: { amount: 9000 } }, '', 20),
+    E('DENIED', 'tf-attacker-inject', { hash: 'd1' }, '[DENIED] by human-1 @ 10:00:29 action=WALLET_CHECKOUT', 29),
+  ];
+}
+
+test('scoreboard: counts caught, verdicts, money and the Judge correctly', () => {
+  const { summarize } = require('../gateway/analytics');
+  const r = summarize(caseBook());
+  assert.deepEqual([r.headline.visitors, r.headline.caught, r.headline.cleared, r.headline.caughtPercent], [3, 1, 2, 33]);
+  assert.deepEqual(r.verdicts, { ALLOW: 2, QUARANTINE: 0, BLOCK_PROPOSED: 0, BLOCKED: 1 });   // a visitor counts by the WORST route they reached
+  assert.equal(r.headline.arrestsSigned, 1);
+  assert.equal(r.headline.sweetTalkIgnored, 1);
+  assert.deepEqual([r.money.executed.count, r.money.executed.amount], [1, 3000]);
+  assert.deepEqual([r.money.heldForJudge.count, r.money.heldForJudge.amount], [2, 14000]);
+  assert.deepEqual([r.money.refusedOutright.count, r.money.refusedOutright.amount], [2, 131000]);
+  assert.deepEqual([r.money.judgeApproved.count, r.money.judgeApproved.amount], [1, 7000]);
+  assert.deepEqual([r.money.judgeRefused.count, r.money.judgeRefused.amount], [1, 9000]);
+  assert.deepEqual([r.money.closedByPolicy.count, r.money.closedByPolicy.amount], [2, 14000]);
+  assert.equal(r.money.keptSafe, 131000 + 9000 + 14000, 'kept safe = refused outright + refused by the Judge + closed by policy');
+  assert.equal(r.headline.moneyKeptSafe, r.money.keptSafe);
+  assert.equal(r.judge.closedByPolicy, 2, 'policy closures are not counted as human refusals');
+  assert.equal(r.judge.refused, 1);
+  assert.equal(r.judge.avgDecisionSeconds, 12.3);
+});
+
+test('scoreboard: per-character table, recent cases and timeline', () => {
+  const { summarize } = require('../gateway/analytics');
+  const r = summarize(caseBook());
+  const tout = r.byWho.find(w => w.who === 'The Ticket Tout');
+  assert.deepEqual([tout.visitors, tout.caught, tout.cleared, tout.refused], [1, 1, 0, 31000]);
+  assert.equal(r.byWho.find(w => w.who === 'The Regular').spent, 3000);
+  assert.equal(r.recent[0].id, 'scalper-1');                          // most recent first
+  assert.equal(r.recent[0].verdict, 'BLOCKED');
+  assert.equal(r.recent[0].threat, 95);
+  assert.ok(!r.recent.some(x => x.id.startsWith('tf-attacker')), 'sessions that only appear in approvals are not visitors');
+  const total = r.timeline.buckets.reduce((a, b) => a + b.cleared + b.held + b.refused + b.caught, 0);
+  assert.equal(total, 1 + 2 + 2 + 2, 'sales + held + refused + caught events are all on the timeline');
+  assert.deepEqual(require('../gateway/analytics').summarize([]).headline.visitors, 0, 'an empty log is fine');
+});
+
+test('scoreboard: nicknames and bucket sizes', () => {
+  const a = require('../gateway/analytics');
+  assert.equal(a.whoIs('scalper-123'), 'The Ticket Tout');
+  assert.equal(a.whoIs('tf-attacker-inject'), 'The Smooth Talker (AI)');
+  assert.equal(a.whoIs('somebody'), 'Other callers');
+  assert.equal(a.whoIs('e2e-scalper'), 'The Ticket Tout');
+  assert.equal(a.whoIs('legit-1790409964700'), 'The Regular');
+  assert.equal(a.bucketMs(30_000), 10_000);
+  assert.ok(a.bucketMs(3 * 3_600_000) >= 300_000, 'a 3 hour span must not draw thousands of bars');
+});
+
+test('scoreboard page: renders real-shaped data without errors', () => {
+  const fs = require('fs'), vm = require('vm');
+  const html = fs.readFileSync(require('path').join(__dirname, '..', 'ui', 'scoreboard.html'), 'utf8');
+  const js = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const els = {};
+  const mk = (id) => ({ id, _h: '', _t: '', className: '', style: {}, classList: { add() {}, remove() {} }, setAttribute() {}, addEventListener() {},
+    set innerHTML(v) { this._h = v; }, get innerHTML() { return this._h; }, set textContent(v) { this._t = v; }, get textContent() { return this._t; }, querySelector() { return this._q || (this._q = mk('q')); } });
+  const doc = { getElementById: (id) => els[id] || (els[id] = mk(id)), addEventListener() {}, hidden: false };
+  const ctx = { document: doc, console, setInterval() {}, fetch: async () => ({ ok: false, json: async () => ({}) }) };
+  vm.createContext(ctx);
+  vm.runInContext(js, ctx);
+  const data = { ...require('../gateway/analytics').summarize(caseBook()), range: 'live', tiers: { 1: 2, 2: 0, 3: 5, 4: 0, 5: 3, human: 1 },
+    secondOpinion: { calls: 9, raisedRisk: 3, injectionsFlagged: 2, fallbacks: 0, providerFallbacks: 0, servedBy: { jev: 9 } } };
+  ctx.__d = data;
+  vm.runInContext('render(__d)', ctx);
+  assert.equal(els.tCaught._t, '1');
+  assert.equal(els.tSafe._t, '₹1,54,000');                             // Indian digit grouping
+  assert.match(els.verdicts._h, /DOOR SLAMMED/);
+  assert.match(els.money._h, /₹1,31,000/);
+  assert.match(els.chart._h, /<svg/);
+  assert.match(els.recent._q._h, /scalper-1/);
+  assert.match(els.recent._q._h, /DOOR SLAMMED/);
+  assert.match(els.byWho._q._h, /The Ticket Tout/);
+});

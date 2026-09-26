@@ -355,6 +355,36 @@ test('judgment: with no provider available it falls back to the deterministic sc
   assert.equal((await session(id)).route, 'ALLOW');
 });
 
+test('scoreboard: the gateway reports what the scenarios above actually did', async () => {
+  const r = await admin('GET', '/analytics');
+  assert.equal(r.status, 200);
+  const d = r.json;
+  assert.equal(d.range, 'live');
+  assert.ok(d.headline.visitors >= 8, `many visitors were seen, got ${d.headline.visitors}`);
+  assert.ok(d.headline.caught >= 2, `the scalper and the pile were caught, got ${d.headline.caught}`);
+  assert.equal(d.headline.caught + d.headline.cleared, d.headline.visitors, 'every visitor is either caught or cleared');
+  assert.ok(d.verdicts.BLOCKED >= 2, 'arrests were signed');
+  assert.ok(d.money.executed.amount >= 3000 + 2400, 'the regular and the chair buyer went through');
+  assert.ok(d.money.refusedOutright.amount >= 100000, 'the ₹1,00,000 package was refused outright');
+  assert.ok(d.money.judgeApproved.count >= 1 && d.money.judgeRefused.count >= 1, 'the Judge approved and refused something');
+  assert.ok(d.judge.closedByPolicy >= 5, 'the pile was closed automatically after the arrest');
+  assert.ok(d.headline.sweetTalkIgnored >= 1, 'forged notes were ignored');
+  assert.equal(d.money.keptSafe, d.money.refusedOutright.amount + d.money.judgeRefused.amount + d.money.closedByPolicy.amount);
+  assert.ok(d.tiers[1] >= 1 && d.tiers[5] >= 1, 'the ID check saw a signed agent and a script');
+  assert.ok(d.byWho.some(w => w.who === 'The Ticket Tout' && w.caught >= 1));
+  assert.ok(d.timeline.buckets.length >= 1);
+  // Numbers must agree with the Case Book they are built from.
+  const log = (await admin('GET', '/log/all')).json;
+  assert.equal(d.events.total <= log.length, true);
+  assert.equal(d.money.executed.count, log.filter(e => e.type === 'CHECKOUT_EXECUTED').length);
+});
+
+test('scoreboard: the all-time view says clearly when there is no database', async () => {
+  const r = await admin('GET', '/analytics?range=all');
+  assert.equal(r.status, 503);
+  assert.match(r.json.hint, /Neon|DATABASE_URL/);
+});
+
 test('fault switch: a module can be taken down and restored', async () => {
   assert.equal((await admin('POST', '/fault/wallet-firewall', { down: true })).json.ok, true);
   assert.equal((await admin('GET', '/stats/wallet-firewall')).json.health, 'down');

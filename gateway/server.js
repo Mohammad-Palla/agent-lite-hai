@@ -40,6 +40,7 @@ const signature = require('./signature');
 const { WALLET_TX_LIMIT, WALLET_DAILY_LIMIT, CODE: CURRENCY_CODE } = require('./currency');
 const router = require('./router');
 const persistence = require('./persistence');
+const analytics = require('./analytics');
 const moduleSet = require('./modules');
 
 // The UI reads session.identityTier / identityLabel; the identity classifier is the single source of truth.
@@ -446,6 +447,35 @@ adminApp.get('/log', (req, res) => {
   const since = parseInt(req.query.since) || 0;
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
   res.json(log.query({ since, limit }));
+});
+
+// The Scoreboard: how many were caught, every decision, the money, the Judge. ?range=live (this run, default) | all (Neon, every run)
+const _analyticsCache = { all: { at: 0, body: null } };
+adminApp.get('/analytics', async (req, res) => {
+  const range = req.query.range === 'all' ? 'all' : 'live';
+  try {
+    let entries;
+    if (range === 'all') {
+      const c = _analyticsCache.all;
+      if (c.body && Date.now() - c.at < 15_000) return res.json(c.body);   // history is heavy to read: cache it briefly
+      entries = await persistence.history({ limit: 50000 });
+    } else {
+      entries = log.all();
+    }
+    const summary = analytics.summarize(entries);
+    const stats = registry.statsAll().modules;
+    const idc = (stats['identity-classifier'] || {}).counters || {};
+    const jd = (stats['llm-behaviour-scorer'] || {}).counters || {};
+    const body = {
+      range, source: range === 'all' ? 'neon' : 'memory', ...summary,
+      tiers: { 1: idc.tier_1 || 0, 2: idc.tier_2 || 0, 3: idc.tier_3 || 0, 4: idc.tier_4 || 0, 5: idc.tier_5 || 0, human: idc.tier_human || 0 },
+      secondOpinion: { calls: jd.calls || 0, raisedRisk: jd.raised_risk || 0, injectionsFlagged: jd.injections_flagged || 0, fallbacks: jd.fallbacks || 0, providerFallbacks: jd.provider_fallbacks || 0, servedBy: Object.fromEntries(Object.entries(jd).filter(([k]) => k.startsWith('served_by_')).map(([k, v]) => [k.slice(10), v])) },
+    };
+    if (range === 'all') _analyticsCache.all = { at: Date.now(), body };
+    res.json(body);
+  } catch (err) {
+    res.status(503).json({ error: 'analytics_unavailable', detail: err.message, hint: range === 'all' ? 'The all-time view needs the Neon database (DATABASE_URL).' : undefined });
+  }
 });
 
 // Persisted (Neon) history — survives restarts. ?session=&type=&run=&limit=
